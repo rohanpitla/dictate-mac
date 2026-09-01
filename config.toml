@@ -1,0 +1,39 @@
+# Dictate configuration
+
+[general]
+# Hotkey for push-to-talk. Phase 1 supports: "right_option"
+hotkey = "right_option"
+# Print per-stage latency (record / transcribe / paste) to the terminal
+debug = true
+# Mute all other audio (videos, music) while you're dictating; restores on release
+mute_while_dictating = true
+# Skip the LLM cleanup everywhere and paste raw transcripts (also toggleable
+# from the menu bar)
+raw_mode = false
+
+[whisper]
+# MLX model repo (Apple Silicon). Fallback engine uses faster-whisper small.en on CPU.
+model = "mlx-community/whisper-large-v3-turbo"
+
+[ollama]
+# Used from Phase 2 onward. Phase 1 never contacts Ollama.
+model = "qwen2.5:3b"
+fallback_model = "llama3.2:3b"
+
+# Per-app dictation modes (Phase 4). Bundle-ID prefix -> mode.
+# Modes: "email" (professional prose) | "casual" | "code" (paste raw) | "default"
+# These OVERRIDE or extend the built-in mappings in dictate/appdetect.py.
+[app_modes]
+# "com.example.someapp" = "casual"
+
+# Misheard -> correct terms, applied case-insensitively AFTER cleanup (Phase 2+)
+[vocabulary]
+"n 8 n" = "n8n"
+"nadn" = "n8n"
+"twilio" = "Twilio"
+"cloud code" = "Claude Code"
+"claude code" = "Claude Code"
+"h vac" = "HVAC"
+"hvac" = "HVAC"
+"vps" = "VPS"
+"fast api" = "FastAPI"
