@@ -56,7 +56,9 @@ fixes).
 ## Setup
 
 ```bash
-# clone, then from the project root:
+git clone https://github.com/rohanpitla/dictate-mac.git && cd dictate-mac
+
+# from the project root:
 python3.13 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
