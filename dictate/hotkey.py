@@ -10,6 +10,8 @@ from pynput import keyboard
 
 _HOTKEYS = {
     "right_option": keyboard.Key.alt_r,
+    "left_option": keyboard.Key.alt_l,
+    "left_control": keyboard.Key.ctrl_l,
     # Fn/Globe arrives as a flags-changed event with vk 63 (kVK_Function).
     # Detection can vary by keyboard — Right Option and F19 are the safe picks.
     "fn": keyboard.KeyCode.from_vk(63),
@@ -18,6 +20,8 @@ _HOTKEYS = {
 
 HOTKEY_LABELS = {
     "right_option": "Right Option",
+    "left_option": "Left Option",
+    "left_control": "Left Control",
     "fn": "Fn / Globe",
     "f19": "F19",
 }

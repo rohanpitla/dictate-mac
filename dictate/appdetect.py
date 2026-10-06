@@ -18,9 +18,13 @@ import sys
 
 from AppKit import NSWorkspace
 
+# Tone hints only — never ask the model to "format as an email", which makes a
+# small model compose one (greetings, sign-offs) instead of cleaning.
 STYLE_HINTS = {
-    "email": "Format as professional but warm email prose.",
-    "casual": "Keep it casual and concise.",
+    "email": ("The speaker is writing an email: use complete sentences and "
+              "proper punctuation, but add no greeting, sign-off, or words "
+              "they did not say."),
+    "casual": "The speaker is writing a casual chat message: keep it casual.",
 }
 
 # bundle-id prefix -> mode

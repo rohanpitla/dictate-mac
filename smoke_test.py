@@ -35,7 +35,7 @@ def main() -> int:
         from dictate import app, config, hotkey, paster, permissions, recorder, sounds, transcriber  # noqa: F401
         cfg = config.load()
         check("all modules import", True)
-        check("config.toml loads", cfg["general"]["hotkey"] == "right_option",
+        check("config.toml loads", cfg["general"]["hotkey"] in hotkey.HOTKEY_LABELS,
               f"hotkey={cfg['general']['hotkey']}, model={cfg['whisper']['model']}")
     except Exception as exc:
         check("imports/config", False, repr(exc))
@@ -112,6 +112,12 @@ def main() -> int:
           not cleanup.passes_guardrails(raw, "Here is the cleaned text: demo"))
     check("guardrail: good output accepted",
           cleanup.passes_guardrails(raw, "So basically, the client needs a demo."))
+    ask = "Give me a detailed summary of this video and what exactly he's trying to say."
+    check("guardrail: LLM answering the dictation rejected",
+          not cleanup.passes_guardrails(ask, "I'm unable to provide a summary as you've "
+                                        "only provided the input text."))
+    check("guardrail: instruction-shaped dictation passes through",
+          cleanup.passes_guardrails(ask, ask))
 
     vocab_in = "I built it with n 8 n and fast api on a vps for cloud code"
     vocab_out = cleanup.apply_vocabulary(vocab_in, cfg["vocabulary"])
@@ -176,12 +182,12 @@ def main() -> int:
 
     from dictate.hotkey import HotkeyListener
     ok_hk = True
-    for hk in ("right_option", "fn", "f19"):
+    for hk in ("right_option", "left_option", "left_control", "fn", "f19"):
         try:
             HotkeyListener(hk, on_press=lambda: None, on_release=lambda: None)
         except Exception:
             ok_hk = False
-    check("all three hotkey choices construct", ok_hk)
+    check("all hotkey choices construct", ok_hk)
 
     # --- 7. Phase 4: app modes, style hints, pasteboard, latency stats ------
     print("7) Per-app modes & polish (Phase 4)")
@@ -206,7 +212,7 @@ def main() -> int:
     _, email_hint = appdetect.resolve_mode("com.apple.mail", cfg)
     prompt = cleanup._system_prompt(email_hint)
     check("style hint injected, rules intact",
-          "professional but warm" in prompt and "Remove filler words" in prompt
+          "writing an email" in prompt and "Remove filler words" in prompt
           and cleanup._system_prompt(None) == cleanup.SYSTEM_PROMPT)
 
     # full pasteboard snapshot: a non-text type must survive save/restore

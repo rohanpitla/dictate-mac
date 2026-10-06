@@ -1,8 +1,9 @@
 # Dictate configuration
 
 [general]
-# Hotkey for push-to-talk. Phase 1 supports: "right_option"
-hotkey = "right_option"
+# Hotkey for push-to-talk. Supported: "right_option", "left_option",
+# "left_control", "fn", "f19"
+hotkey = "left_option"
 # Print per-stage latency (record / transcribe / paste) to the terminal
 debug = true
 # Mute all other audio (videos, music) while you're dictating; restores on release
