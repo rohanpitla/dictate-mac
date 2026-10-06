@@ -38,38 +38,36 @@ process.
    bar and `Permissions OK` in the terminal. Wait for
    `whisper model warmed up and ready` (first launch takes a few seconds).
 2. Open **Notes**, click into a note.
-3. **Hold Right Option**, say *"this is a test of dictate dictation"*, release.
-   - Pop sound on press, icon turns 🔴 while held
-   - Second sound on release, icon shows ⏳
+3. **Tap Fn**, say *"this is a test of dictate dictation"*, **tap Fn again**.
+   (First set System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.)
+   - Pop sound on the first tap, icon turns 🔴 while recording
+   - Second sound on the second tap, icon shows ⏳
    - Text appears at your cursor within ~1–3 s, icon returns to 🎤
 4. Copy something first (e.g. Cmd+C on a word), dictate again, then Cmd+V
    elsewhere — your **original clipboard text is still there**.
 5. Repeat step 3 in **TextEdit**, a **Chrome textarea** (any comment box or
    claude.ai), and **iMessage**.
-6. **Audio ducking**: play a YouTube video (or music), then hold Right Option
-   and dictate. The video's audio **mutes ~0.2 s after you press** and
-   **unmutes the instant you release** — even before the text appears. If your
-   Mac was already muted before dictating, it stays muted afterwards. To turn
-   this feature off: set `mute_while_dictating = false` in `config.toml`.
-7. **Hands-free mode (double-tap latch)**:
-   - **Double-tap** Right Option (two quick taps, like a double-click). You'll
-     hear a distinct "purr" sound and the icon becomes 🎙️ — Dictate is now
-     recording hands-free, no key held.
-   - Speak a few sentences (taps within the first second are ignored as bounce).
-   - **Tap once** to finish → stop sound, transcription pastes as usual.
-   - Double-tap but **hold** the second press → behaves like normal
-     push-to-talk (release to paste), no latch.
+6. **Audio ducking**: play a YouTube video (or music), then tap Fn and
+   dictate. The video's audio **mutes ~0.2 s after the first tap** and
+   **unmutes the instant you tap to stop** — even before the text appears. If
+   your Mac was already muted before dictating, it stays muted afterwards. To
+   turn this feature off: set `mute_while_dictating = false` in `config.toml`.
+7. **Shortcuts don't trigger dictation**: hold Fn and press an arrow key
+   (Page Up/Down) → no sound, no recording. Typing normally while recording
+   is fine.
 8. Edge checks:
-   - Tap and instantly release Right Option → nothing pastes, no crash.
-   - Hold and speak for 60 seconds → still transcribes and pastes.
+   - Tap Fn twice very quickly → nothing pastes (too short), no crash.
+   - Tap, speak for 60 seconds, tap → still transcribes and pastes.
    - Terminal shows per-stage latency lines like
      `[dictate] latency ms — finalize: 12  transcribe: 900  paste: 400`.
 
 ### Troubleshooting
 
-- **Holding Right Option does nothing** (no sound, no icon change): this is
+- **Tapping the hotkey does nothing** (no sound, no icon change): this is
   almost always missing **Input Monitoring** permission. Check that pane
   first, then quit and relaunch Dictate.
+- **Tapping Fn opens the emoji picker or switches keyboard language**: set
+  System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.
 - **Sounds play but nothing pastes**: missing **Accessibility** permission.
 - **Error sound on press**: microphone permission denied — System Settings →
   Privacy & Security → Microphone → Terminal ON, then relaunch.
@@ -80,7 +78,7 @@ Prereq: Ollama running (`ollama serve`, or the menu bar app) with
 `qwen2.5:3b` pulled. Dictate warms it up at launch — look for
 `ollama cleanup model warmed up and ready` in the terminal.
 
-1. Open Notes, hold Right Option and say, with deliberate filler:
+1. Open Notes, tap Fn and say, with deliberate filler (tap again to finish):
    *"um so basically the uh the client needs like a demo"*.
    Expect roughly: **"So basically, the client needs a demo."**
    The latency line shows the stage: `cleanup: 800 (llm)`.
@@ -96,13 +94,12 @@ Prereq: Ollama running (`ollama serve`, or the menu bar app) with
 
 Click the 🎤 menu bar icon:
 
-1. **Enabled** — untick it, hold Right Option → nothing happens (no sound, no
-   recording). Tick it again → dictation works. Unticking while hands-free
-   recording is active aborts that recording.
-2. **Hotkey** — pick **F19** (if your keyboard has one) or switch back to
-   Right Option; the change applies instantly (no restart) and persists in
-   config.toml. **Fn / Globe** is offered but flaky on some keyboards — if it
-   doesn't trigger, use Right Option or F19.
+1. **Enabled** — untick it, tap Fn → nothing happens (no sound, no
+   recording). Tick it again → dictation works. Unticking while a recording
+   is active aborts that recording.
+2. **Hotkey** — pick **Left Option** or **F19** (if your keyboard has one),
+   then switch back to **Fn / Globe**; the change applies instantly (no
+   restart) and persists in config.toml.
 3. **Whisper Model** — pick **Base (fastest)**, dictate (first use downloads
    the smaller model, watch the terminal), then switch back to
    **Large v3 Turbo**. Persists in config.toml.

@@ -23,7 +23,7 @@ ACCESSIBILITY_HELP = """\
 
 INPUT_MONITORING_HELP = """\
 *** Input Monitoring permission missing (needed for the hotkey) ***
-  Without it, holding Right Option will silently do NOTHING.
+  Without it, tapping the hotkey will silently do NOTHING.
   System Settings -> Privacy & Security -> Input Monitoring
   -> toggle ON "Terminal" (or the app you launched Dictate from)
   Then quit and relaunch Dictate."""

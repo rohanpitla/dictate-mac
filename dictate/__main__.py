@@ -4,6 +4,7 @@ import sys
 
 from dictate import __version__, config, permissions
 from dictate.app import DictateApp
+from dictate.hotkey import HOTKEY_LABELS
 
 
 def main() -> None:
@@ -14,7 +15,9 @@ def main() -> None:
         print("\nDictate will keep running so you can grant permissions, "
               "but the hotkey/paste won't work until you relaunch it.\n")
     else:
-        print("Permissions OK. Hold Right Option anywhere to dictate.")
+        label = HOTKEY_LABELS.get(cfg["general"]["hotkey"], "the hotkey")
+        print(f"Permissions OK. Tap {label} to start dictating, tap again "
+              "to stop.")
 
     app = DictateApp(cfg)
     app.start_background_services()

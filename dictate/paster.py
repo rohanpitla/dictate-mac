@@ -65,9 +65,8 @@ def _press_cmd_v() -> None:
     src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     for key_down in (True, False):
         event = Quartz.CGEventCreateKeyboardEvent(src, _KVK_ANSI_V, key_down)
-        # Explicitly Command-only: the user may still be holding Right Option
-        # (the dictation hotkey) — without this, the paste would become
-        # Cmd+Opt+V or another shortcut.
+        # Explicitly Command-only: if any modifier is still physically down,
+        # the paste would otherwise become Cmd+Opt+V or another shortcut.
         Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
         time.sleep(0.01)

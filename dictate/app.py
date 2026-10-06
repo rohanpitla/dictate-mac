@@ -19,16 +19,10 @@ from dictate.recorder import MicrophoneError, Recorder
 
 ICON_IDLE = "🎤"
 ICON_RECORDING = "🔴"
-ICON_HANDSFREE = "🎙️"
 ICON_BUSY = "⏳"
 
 # States
 IDLE, RECORDING, PROCESSING = "idle", "recording", "processing"
-
-# Two presses within this window = double-tap (hands-free latch toggle)
-DOUBLE_TAP_S = 0.4
-# Ignore a stop tap this soon after latching (debounces sloppy taps)
-LATCH_MIN_S = 1.0
 
 MODEL_CHOICES = [
     ("Large v3 Turbo (best)", "mlx-community/whisper-large-v3-turbo"),
@@ -67,21 +61,10 @@ class DictateApp(rumps.App):
             atexit.register(self._muter.unmute)  # never leave the Mac muted
         self._state = IDLE
         self._state_lock = threading.Lock()
-        # Hands-free latch bookkeeping — only touched on the hotkey
-        # listener thread (press and release run on the same thread).
-        self._latched = False
-        self._pending_latch = False
-        self._last_press = 0.0
-        self._latch_started = 0.0
         self._hotkey = self._make_listener(self._hotkey_name)
 
     def _make_listener(self, hotkey_name: str) -> HotkeyListener:
-        return HotkeyListener(
-            hotkey_name,
-            on_press=self._on_hotkey_press,
-            on_release=self._on_hotkey_release,
-            on_cancel=self._on_hotkey_cancel,
-        )
+        return HotkeyListener(hotkey_name, on_tap=self._on_hotkey_tap)
 
     # ------------------------------------------------------------- menu --
     def _build_menu(self) -> None:
@@ -138,22 +121,20 @@ class DictateApp(rumps.App):
 
     def _update_info_item(self) -> None:
         label = HOTKEY_LABELS[self._hotkey_name]
-        self._info_item.title = (f"Dictate v{__version__} — hold {label} "
-                                 f"(double-tap = hands-free)")
+        self._info_item.title = (f"Dictate v{__version__} — tap {label} "
+                                 f"to start / stop")
 
     def _on_toggle_enabled(self, item) -> None:
         self._enabled = not self._enabled
         item.state = 1 if self._enabled else 0
         if self._enabled:
             return
-        # If dictation is disabled mid-recording (incl. hands-free), abort it —
-        # otherwise a latched recording could never be stopped by key.
+        # Disabling mid-recording aborts it — the hotkey is ignored while
+        # disabled, so the recording could otherwise never be stopped.
         with self._state_lock:
             was_recording = self._state == RECORDING
             if was_recording:
                 self._state = IDLE
-                self._latched = False
-                self._pending_latch = False
         if was_recording:
             self._recorder.stop()  # discard
             if self._muter is not None:
@@ -230,27 +211,21 @@ class DictateApp(rumps.App):
     def _set_icon(self, icon: str) -> None:
         AppHelper.callAfter(lambda: setattr(self, "title", icon))
 
-    def _on_hotkey_press(self) -> None:
+    def _on_hotkey_tap(self) -> None:
+        """First tap starts recording; the next tap stops and transcribes."""
         if not self._enabled:
             return
-        now = time.monotonic()
-        is_double_tap = (now - self._last_press) < DOUBLE_TAP_S
-        self._last_press = now
-        stop_handsfree = False
         with self._state_lock:
-            if self._state == IDLE:
-                self._state = RECORDING
-                self._pending_latch = is_double_tap
-            elif (self._state == RECORDING and self._latched
-                  and now - self._latch_started > LATCH_MIN_S):
-                # Hands-free: a single tap ends listening and transcribes
-                self._latched = False
+            if self._state == RECORDING:
                 self._state = PROCESSING
-                stop_handsfree = True
+                stopping = True
+            elif self._state == IDLE:
+                self._state = RECORDING
+                stopping = False
             else:
-                return  # busy, or a bounce right after latching
+                return  # still transcribing the previous dictation
 
-        if stop_handsfree:
+        if stopping:
             self._finish_recording()
             return
 
@@ -259,7 +234,6 @@ class DictateApp(rumps.App):
         except MicrophoneError as exc:
             with self._state_lock:
                 self._state = IDLE
-            self._pending_latch = False
             sounds.play("error")
             print(f"[dictate] microphone unavailable: {exc}\n"
                   "  If you just denied the mic prompt: System Settings -> "
@@ -273,49 +247,10 @@ class DictateApp(rumps.App):
             threading.Thread(target=self._muter.mute, daemon=True,
                              name="dictate-mute").start()
 
-    def _on_hotkey_cancel(self) -> None:
-        """Another key was typed while the hotkey was held — the user is using
-        Option as a typing modifier (é, ™, shortcuts), not dictating. Discard
-        the recording silently instead of transcribing keyboard noise."""
-        with self._state_lock:
-            if self._state != RECORDING or self._latched:
-                return  # hands-free typing while dictating is fine
-            self._state = IDLE
-            self._pending_latch = False
-        wav_path = self._recorder.stop()
-        if wav_path is not None:
-            wav_path.unlink(missing_ok=True)
-        if self._muter is not None:
-            threading.Thread(target=self._muter.unmute, daemon=True,
-                             name="dictate-unmute").start()
-        self._set_icon(ICON_IDLE)
-        if self._debug:
-            print("[dictate] recording cancelled (hotkey used as typing modifier)")
-
-    def _on_hotkey_release(self) -> None:
-        with self._state_lock:
-            if self._state != RECORDING:
-                return
-            if self._latched:
-                return  # hands-free: keep listening until the stop double-tap
-            if self._pending_latch and self._recorder.elapsed < DOUBLE_TAP_S:
-                # Second tap of a double-tap, released quickly -> latch on.
-                # (Double-tap then HOLD falls through to normal push-to-talk.)
-                self._pending_latch = False
-                self._latched = True
-                self._latch_started = time.monotonic()
-                sounds.play("latch")
-                self._set_icon(ICON_HANDSFREE)
-                return
-            self._pending_latch = False
-            self._state = PROCESSING
-        self._finish_recording()
-
     def _finish_recording(self) -> None:
         """Stop the recorder (fast) and hand off to the pipeline worker.
 
-        Runs on the hotkey listener thread; recorder.stop() is milliseconds,
-        and the cheap discard path must not block a quick second tap.
+        Runs on the hotkey listener thread; recorder.stop() is milliseconds.
         """
         t0 = time.monotonic()
         wav_path = self._recorder.stop()

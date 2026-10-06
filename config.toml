@@ -1,9 +1,11 @@
 # Dictate configuration
 
 [general]
-# Hotkey for push-to-talk. Supported: "right_option", "left_option",
-# "left_control", "fn", "f19"
-hotkey = "left_option"
+# Tap once to start dictating, tap again to stop. Supported: "fn",
+# "right_option", "left_option", "left_control", "f19".
+# For "fn": set System Settings > Keyboard > "Press 🌐 key to" > Do Nothing,
+# or each tap will also open the emoji picker / switch input source.
+hotkey = "fn"
 # Print per-stage latency (record / transcribe / paste) to the terminal
 debug = true
 # Mute all other audio (videos, music) while you're dictating; restores on release

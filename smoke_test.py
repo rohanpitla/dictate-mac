@@ -184,10 +184,33 @@ def main() -> int:
     ok_hk = True
     for hk in ("right_option", "left_option", "left_control", "fn", "f19"):
         try:
-            HotkeyListener(hk, on_press=lambda: None, on_release=lambda: None)
+            HotkeyListener(hk, on_tap=lambda: None)
         except Exception:
             ok_hk = False
     check("all hotkey choices construct", ok_hk)
+
+    # Fn press/release is read from the real CGEvent flags (pynput alone
+    # reports both as releases), and a tap fires only without another key.
+    import Quartz
+    from pynput import keyboard as kb
+    taps = []
+    fn_listener = HotkeyListener("fn", on_tap=lambda: taps.append(1))
+
+    def fn_event(down: bool):
+        ev = Quartz.CGEventCreateKeyboardEvent(None, 63, down)
+        Quartz.CGEventSetType(ev, Quartz.kCGEventFlagsChanged)
+        Quartz.CGEventSetFlags(ev, Quartz.kCGEventFlagMaskSecondaryFn if down else 0)
+        fn_listener._listener._handle_message(None, Quartz.kCGEventFlagsChanged,
+                                              ev, None, False)
+
+    fn_event(True)
+    fn_event(False)
+    one_tap = len(taps) == 1
+    fn_event(True)
+    fn_listener._handle_press(kb.Key.down)  # Fn+Down = Page Down, not a tap
+    fn_event(False)
+    check("Fn tap fires once; Fn+key combo does not", one_tap and len(taps) == 1,
+          f"taps={len(taps)}")
 
     # --- 7. Phase 4: app modes, style hints, pasteboard, latency stats ------
     print("7) Per-app modes & polish (Phase 4)")

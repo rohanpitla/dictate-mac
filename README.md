@@ -1,7 +1,7 @@
 # Dictate
 
-A free, fully local voice dictation tool for macOS. Hold a hotkey anywhere
-on your Mac, speak, release — clean, formatted text appears wherever your
+A free, fully local voice dictation tool for macOS. Tap a hotkey anywhere
+on your Mac, speak, tap again — clean, formatted text appears wherever your
 cursor is. No subscriptions, no cloud, no audio ever leaves your machine.
 
 ## Why
@@ -23,9 +23,9 @@ run entirely on-device. So I built my own.
 
 ## What it does
 
-1. Hold **Right Option** (configurable) anywhere — a sound plays, the mic
-   records while it's held.
-2. Release — the recording is transcribed locally with Whisper, then passed
+1. Tap **Fn / Globe** (configurable) anywhere — a sound plays and the mic
+   starts recording. No need to hold the key.
+2. Tap it again — the recording is transcribed locally with Whisper, then passed
    through a local LLM that strips filler words and fixes punctuation
    without changing your meaning or tone.
 3. The cleaned text is pasted at your cursor, in whatever app is focused.
@@ -40,8 +40,9 @@ the raw transcript — you never lose what you said.
   Messages, raw passthrough (no LLM at all) for code editors and terminals.
 - **Custom vocabulary** — a configurable list of misheard → correct term
   replacements for names, acronyms, and jargon Whisper reliably gets wrong.
-- **Hands-free latch** — double-tap the hotkey to start continuous listening
-  without holding the key down; tap once to stop.
+- **Modifier-safe hotkey** — using the key in a shortcut (Fn+arrow,
+  Option+letter) never starts a recording; only a clean tap does. If you use
+  Fn, set System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.
 - **Audio ducking** — mutes other system audio while you're dictating so it
   isn't picked up by the mic.
 - **Clipboard-safe pasting** — your existing clipboard (including images and
