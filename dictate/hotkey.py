@@ -8,6 +8,8 @@ Requires Input Monitoring permission — without it, callbacks silently
 never fire (see permissions.py).
 """
 
+import sys
+import traceback
 from collections.abc import Callable
 
 import Quartz
@@ -32,12 +34,33 @@ HOTKEY_LABELS = {
 }
 
 
+_TAP_DISABLED = (Quartz.kCGEventTapDisabledByTimeout,
+                 Quartz.kCGEventTapDisabledByUserInput)
+
+
 class _Listener(keyboard.Listener):
-    """pynput 1.8.2 has no Fn entry in its modifier-flag table, so it reports
-    every Fn flags-changed event (press and release) as a release. Read the
-    Fn flag off the event itself instead."""
+    """Fixes two pynput 1.8.2 gaps on macOS.
+
+    - macOS switches the event tap off when the system is busy (e.g. while
+      Whisper is loading) and pynput never switches it back on, so the
+      hotkey went dead mid-recording and the recording could not be stopped.
+    - It has no Fn entry in its modifier-flag table, so every Fn event
+      (press and release) came through as a release.
+    """
+
+    _tap = None
+
+    def _create_event_tap(self):
+        self._tap = super()._create_event_tap()
+        return self._tap
 
     def _handle_message(self, proxy, event_type, event, refcon, injected):
+        if event_type in _TAP_DISABLED:
+            if self._tap is not None:
+                Quartz.CGEventTapEnable(self._tap, True)
+            print("[dictate] macOS paused the hotkey listener; re-enabled it",
+                  file=sys.stderr)
+            return
         if (event_type == Quartz.kCGEventFlagsChanged
                 and Quartz.CGEventGetIntegerValueField(
                     event, Quartz.kCGKeyboardEventKeycode) == _FN_VK):
@@ -81,5 +104,12 @@ class HotkeyListener:
     def _handle_release(self, key) -> None:
         if key == self._key and self._held:
             self._held = False
-            if not self._combo:
+            if self._combo:
+                return
+            # pynput permanently stops the listener if a callback raises,
+            # which would leave the hotkey dead until the app is restarted.
+            try:
                 self._on_tap()
+            except Exception:
+                print("[dictate] hotkey handler failed:", file=sys.stderr)
+                traceback.print_exc()

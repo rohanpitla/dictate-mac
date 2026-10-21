@@ -12,7 +12,8 @@ DEFAULTS = {
     "general": {"hotkey": "right_option", "debug": True,
                 "mute_while_dictating": True, "raw_mode": False},
     "app_modes": {},
-    "whisper": {"model": "mlx-community/whisper-large-v3-turbo"},
+    "whisper": {"model": "mlx-community/whisper-large-v3-turbo",
+                "language": "en"},
     "ollama": {"model": "qwen2.5:3b", "fallback_model": "llama3.2:3b"},
     "vocabulary": {},
 }

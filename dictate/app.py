@@ -1,6 +1,7 @@
 """Dictate menu bar app: wires hotkey -> recorder -> transcriber -> paster."""
 
 import atexit
+import queue
 import subprocess
 import sys
 import threading
@@ -20,9 +21,6 @@ from dictate.recorder import MicrophoneError, Recorder
 ICON_IDLE = "🎤"
 ICON_RECORDING = "🔴"
 ICON_BUSY = "⏳"
-
-# States
-IDLE, RECORDING, PROCESSING = "idle", "recording", "processing"
 
 MODEL_CHOICES = [
     ("Large v3 Turbo (best)", "mlx-community/whisper-large-v3-turbo"),
@@ -59,8 +57,14 @@ class DictateApp(rumps.App):
         if config["general"].get("mute_while_dictating", True):
             self._muter = OutputMuter()
             atexit.register(self._muter.unmute)  # never leave the Mac muted
-        self._state = IDLE
+        # A tap always toggles recording, even while earlier dictations are
+        # still transcribing — those wait in _jobs and are pasted in order.
+        # (Ignoring taps while busy let the app drift out of step with the
+        # user: their "stop" tap would start a recording that never ended.)
         self._state_lock = threading.Lock()
+        self._recording = False
+        self._pending = 0
+        self._jobs: queue.Queue = queue.Queue()
         self._hotkey = self._make_listener(self._hotkey_name)
 
     def _make_listener(self, hotkey_name: str) -> HotkeyListener:
@@ -132,15 +136,15 @@ class DictateApp(rumps.App):
         # Disabling mid-recording aborts it — the hotkey is ignored while
         # disabled, so the recording could otherwise never be stopped.
         with self._state_lock:
-            was_recording = self._state == RECORDING
-            if was_recording:
-                self._state = IDLE
+            was_recording = self._recording
+            self._recording = False
         if was_recording:
-            self._recorder.stop()  # discard
+            wav_path = self._recorder.stop()
+            if wav_path is not None:
+                wav_path.unlink(missing_ok=True)
             if self._muter is not None:
-                threading.Thread(target=self._muter.unmute, daemon=True,
-                                 name="dictate-unmute").start()
-            self._set_icon(ICON_IDLE)
+                self._muter.unmute_async()
+            self._refresh_icon()
 
     def _on_choose_hotkey(self, item) -> None:
         new_key = next(k for k, lbl in HOTKEY_LABELS.items()
@@ -204,11 +208,33 @@ class DictateApp(rumps.App):
                          daemon=True, name="dictate-warmup").start()
         threading.Thread(target=cleanup.warmup, args=(self._config,),
                          daemon=True, name="dictate-ollama-warmup").start()
+        threading.Thread(target=self._worker, daemon=True,
+                         name="dictate-pipeline").start()
+        threading.Thread(target=self._idle_unloader, daemon=True,
+                         name="dictate-idle-unload").start()
         self._hotkey.start()
+
+    def _idle_unloader(self) -> None:
+        while True:
+            time.sleep(60)
+            with self._state_lock:
+                busy = self._recording or self._pending > 0
+            if not busy:
+                try:
+                    transcriber.unload_if_idle()
+                except Exception as exc:
+                    print(f"[dictate] idle unload failed: {exc}", file=sys.stderr)
 
     # AppKit UI may only be touched from the main thread; hotkey callbacks
     # and the pipeline worker run on background threads.
-    def _set_icon(self, icon: str) -> None:
+    def _refresh_icon(self) -> None:
+        with self._state_lock:
+            if self._recording:
+                icon = ICON_RECORDING
+            elif self._pending:
+                icon = ICON_BUSY
+            else:
+                icon = ICON_IDLE
         AppHelper.callAfter(lambda: setattr(self, "title", icon))
 
     def _on_hotkey_tap(self) -> None:
@@ -216,14 +242,8 @@ class DictateApp(rumps.App):
         if not self._enabled:
             return
         with self._state_lock:
-            if self._state == RECORDING:
-                self._state = PROCESSING
-                stopping = True
-            elif self._state == IDLE:
-                self._state = RECORDING
-                stopping = False
-            else:
-                return  # still transcribing the previous dictation
+            stopping = self._recording
+            self._recording = not stopping
 
         if stopping:
             self._finish_recording()
@@ -233,7 +253,7 @@ class DictateApp(rumps.App):
             self._recorder.start()
         except MicrophoneError as exc:
             with self._state_lock:
-                self._state = IDLE
+                self._recording = False
             sounds.play("error")
             print(f"[dictate] microphone unavailable: {exc}\n"
                   "  If you just denied the mic prompt: System Settings -> "
@@ -241,46 +261,56 @@ class DictateApp(rumps.App):
                   file=sys.stderr)
             return
         sounds.play("start")
-        self._set_icon(ICON_RECORDING)
+        self._refresh_icon()
         if self._muter is not None:
-            # osascript takes ~100ms; keep the hotkey listener thread snappy
-            threading.Thread(target=self._muter.mute, daemon=True,
-                             name="dictate-mute").start()
+            self._muter.mute_async()
+        # Both models are freed when idle; reload them while the user talks.
+        transcriber.preload(self._model)
+        if not self._raw_mode:
+            threading.Thread(target=cleanup.preload, args=(self._config,),
+                             daemon=True, name="dictate-preload").start()
 
     def _finish_recording(self) -> None:
-        """Stop the recorder (fast) and hand off to the pipeline worker.
+        """Stop the recorder (fast) and queue the audio for transcription.
 
         Runs on the hotkey listener thread; recorder.stop() is milliseconds.
         """
         t0 = time.monotonic()
         wav_path = self._recorder.stop()
         record_ms = (time.monotonic() - t0) * 1000
+        # Unmute now so the video/music resumes the moment dictation ends —
+        # and so the stop sound is audible.
+        if self._muter is not None:
+            self._muter.unmute_async()
         if wav_path is None:  # accidental tap / empty recording
-            if self._muter is not None:
-                threading.Thread(target=self._muter.unmute, daemon=True,
-                                 name="dictate-unmute").start()
-            with self._state_lock:
-                self._state = IDLE
-            self._set_icon(ICON_IDLE)
+            self._refresh_icon()
             return
-        self._set_icon(ICON_BUSY)
+        sounds.play("stop")
         # Capture the app that will receive the paste NOW, while it's frontmost
         bundle_id = appdetect.frontmost_bundle_id()
-        threading.Thread(target=self._process,
-                         args=(wav_path, record_ms, bundle_id),
-                         daemon=True, name="dictate-pipeline").start()
+        with self._state_lock:
+            self._pending += 1
+        self._refresh_icon()
+        self._jobs.put((wav_path, record_ms, bundle_id))
+
+    def _worker(self) -> None:
+        while True:
+            job = self._jobs.get()
+            try:
+                self._process(*job)
+            finally:
+                with self._state_lock:
+                    self._pending -= 1
+                self._refresh_icon()
 
     def _process(self, wav_path, record_ms: float,
                  bundle_id: str | None = None) -> None:
         try:
-            # Unmute first so the video/music resumes the moment dictation
-            # ends — and so the stop sound below is audible.
-            if self._muter is not None:
-                self._muter.unmute()
-            sounds.play("stop")
-
             t1 = time.monotonic()
-            raw = transcriber.transcribe(str(wav_path), self._model)
+            raw = transcriber.transcribe(
+                str(wav_path), self._model,
+                transcriber.vocabulary_prompt(self._config.get("vocabulary", {})),
+                self._config["whisper"].get("language") or None)
             if raw and transcriber.looks_like_hallucination(raw, str(wav_path)):
                 if self._debug:
                     print(f"[dictate] dropped whisper hallucination on quiet "
@@ -324,6 +354,3 @@ class DictateApp(rumps.App):
             traceback.print_exc()
         finally:
             wav_path.unlink(missing_ok=True)
-            with self._state_lock:
-                self._state = IDLE
-            self._set_icon(ICON_IDLE)

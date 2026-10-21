@@ -17,6 +17,9 @@ raw_mode = false
 [whisper]
 # MLX model repo (Apple Silicon). Fallback engine uses faster-whisper small.en on CPU.
 model = "mlx-community/whisper-large-v3-turbo"
+# Language you dictate in ("en", "hi", "es", ...). Pinning it makes
+# transcription ~2x faster than auto-detect. Set to "" to auto-detect.
+language = "en"
 
 [ollama]
 # Used from Phase 2 onward. Phase 1 never contacts Ollama.

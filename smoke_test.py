@@ -128,14 +128,17 @@ def main() -> int:
     # Graceful degradation: unreachable Ollama must return raw, never raise
     bad_cfg = {"ollama": {"model": "qwen2.5:3b", "fallback_model": None},
                "vocabulary": {}}
-    real_url = cleanup.OLLAMA_URL
+    real_url, real_start = cleanup.OLLAMA_URL, cleanup.start_ollama
+    starts = []
+    cleanup.start_ollama = lambda: starts.append(1)
     cleanup.OLLAMA_URL = "http://localhost:1"  # nothing listens here
     t0 = time.monotonic()
     degraded, stage = cleanup.clean(raw, bad_cfg)
     dt = time.monotonic() - t0
-    cleanup.OLLAMA_URL = real_url
+    cleanup.OLLAMA_URL, cleanup.start_ollama = real_url, real_start
     check("ollama down -> raw transcript, fast, no crash",
           degraded == raw and stage == "raw" and dt < 2, f"{dt * 1000:.0f}ms")
+    check("ollama down -> Dictate starts it for the next dictation", starts == [1])
 
     # Live cleanup if Ollama is actually up (the Phase 2 deliverable)
     t0 = time.monotonic()
@@ -211,6 +214,48 @@ def main() -> int:
     fn_event(False)
     check("Fn tap fires once; Fn+key combo does not", one_tap and len(taps) == 1,
           f"taps={len(taps)}")
+
+    # A raising handler must not kill the listener (pynput stops it for good).
+    def boom():
+        raise RuntimeError("handler bug")
+    fn_listener._on_tap = boom
+    try:
+        fn_event(True)
+        fn_event(False)
+        survived = True
+    except Exception:
+        survived = False
+    check("hotkey handler exception is contained", survived)
+
+    import numpy as np
+    from dictate import ducking, transcriber as tr
+    rng = np.random.default_rng(0)
+    tone = (0.1 * np.sin(np.arange(32000) * 0.1)).astype(np.float32)
+    padded = np.concatenate([rng.normal(0, 0.003, 16000 * 8), tone,
+                             rng.normal(0, 0.003, 16000 * 40)]).astype(np.float32)
+    trimmed = len(tr.trim_silence(padded)) / 16000
+    check("long silences trimmed before Whisper", 2.0 <= trimmed < 4.5,
+          f"50s -> {trimmed:.1f}s")
+
+    garbage = [{"avg_logprob": float("nan"), "compression_ratio": 17.8},
+               {"avg_logprob": -0.39, "compression_ratio": 30.7},
+               {"avg_logprob": -1.35, "compression_ratio": 0.7}]
+    speech = {"avg_logprob": -0.3, "compression_ratio": 1.0}
+    check("Whisper garbage on coughs/clicks is dropped, speech kept",
+          all(tr.is_garbage_segment(s) for s in garbage)
+          and not tr.is_garbage_segment(speech))
+    check("long run-ons split into even chunks",
+          [len(c.split()) for c in cleanup.split_chunks("w " * 125)] == [63, 62])
+
+    real_osa = ducking._osascript
+    ducking._osascript = lambda e: "false" if "get volume" in e else time.sleep(0.02)
+    muter = ducking.OutputMuter()
+    for _ in range(10):
+        muter.mute_async()
+        muter.unmute_async()
+    time.sleep(1.0)
+    ducking._osascript = real_osa
+    check("quick start/stop never leaves the Mac muted", not muter._we_muted)
 
     # --- 7. Phase 4: app modes, style hints, pasteboard, latency stats ------
     print("7) Per-app modes & polish (Phase 4)")
