@@ -63,6 +63,24 @@ def main() -> int:
     normalized = "".join(c for c in text.lower() if c.isalpha() or c == " ")
     hits = sum(word in normalized for word in ["hello", "world", "test", "dictation"])
     check("transcript matches phrase", hits >= 3, f"{dt:.1f}s -> {text!r}")
+
+    # one Whisper failure must not disable transcription
+    real_run, fails = transcriber._run_whisper, []
+
+    def flaky(*args):
+        if not fails:
+            fails.append(1)
+            raise RuntimeError("simulated out-of-memory")
+        return real_run(*args)
+
+    transcriber._run_whisper = flaky
+    try:
+        retried = transcriber.transcribe(str(wav), cfg["whisper"]["model"])
+    except Exception as exc:
+        retried = f"<{exc!r}>"
+    transcriber._run_whisper = real_run
+    check("Whisper error is retried, not fatal",
+          fails == [1] and "test" in retried.lower(), repr(retried[:60]))
     wav.unlink(missing_ok=True)
 
     # --- 3. clipboard round-trip --------------------------------------------
@@ -97,6 +115,105 @@ def main() -> int:
     rec = recorder.Recorder()
     check("Recorder.stop() before start returns None", rec.stop() is None)
 
+    # --- 4b. Recording reliability -------------------------------------------
+    print("4b) Recording can't hang or be lost")
+    import shutil
+    import threading
+
+    import numpy as np
+
+    rec_dir = Path(tempfile.mkdtemp(prefix="dictate_smoke_rec_"))
+
+    class FakeStream:
+        """A mic whose shutdown never returns, like a device that vanished."""
+        def __init__(self, callback, hang_open=False):
+            self.callback, self.hang_open = callback, hang_open
+            self.feeding = True
+
+        def start(self):
+            if self.hang_open:
+                threading.Event().wait()
+            def feed():
+                while self.feeding:
+                    self.callback(np.full((1600, 1), 1000, dtype=np.int16),
+                                  1600, None, None)
+                    time.sleep(0.02)
+            threading.Thread(target=feed, daemon=True).start()
+
+        def abort(self):
+            threading.Event().wait()  # blocks forever
+
+        def close(self):
+            pass
+
+    streams = []
+
+    def factory(callback):
+        streams.append(FakeStream(callback))
+        return streams[-1]
+
+    rec = recorder.Recorder(directory=rec_dir, stream_factory=factory)
+    rec.start()
+    time.sleep(0.4)
+    on_disk_while_recording = sum(p.stat().st_size for p in rec_dir.glob("*.pcm"))
+    t0 = time.monotonic()
+    saved = rec.stop()
+    stop_s = time.monotonic() - t0
+    check("audio is on disk while still recording", on_disk_while_recording > 0,
+          f"{on_disk_while_recording} bytes")
+    check("stop returns at once even if the mic never shuts down",
+          saved is not None and stop_s < 0.5, f"{stop_s * 1000:.0f}ms")
+    check("saved recording loads as audio",
+          saved is not None and len(transcriber._load_wav(str(saved))) > 1600)
+
+    rec.start()
+    time.sleep(0.2)
+    streams[-1].feeding = False
+    real_stall, recorder.STALL_S = recorder.STALL_S, 0.3
+    time.sleep(0.5)
+    check("a mic that stops sending audio is detected", rec.stalled)
+    recorder.STALL_S = real_stall
+    rec.stop()
+
+    real_timeout, recorder.OPEN_TIMEOUT_S = recorder.OPEN_TIMEOUT_S, 0.3
+    hung = recorder.Recorder(
+        directory=rec_dir,
+        stream_factory=lambda cb: FakeStream(cb, hang_open=True))
+    try:
+        hung.start()
+        check("a mic that never opens gives an error, not a freeze", False)
+    except recorder.MicrophoneError:
+        check("a mic that never opens gives an error, not a freeze", True)
+    recorder.OPEN_TIMEOUT_S = real_timeout
+
+    for p in rec_dir.glob("*.pcm"):
+        p.unlink()
+    for i in range(8):
+        (rec_dir / f"2026010{i}-000000-000.pcm").write_bytes(b"\0" * 64000)
+    done = recorder.mark_done(rec_dir / "20260107-000000-000.pcm")
+    recorder.prune(rec_dir)
+    left = recorder.saved_recordings(rec_dir)
+    check("only the 5 newest recordings are kept",
+          len(left) == 5 and left[0].name.startswith("20260103"))
+    check("unfinished recordings are found for recovery",
+          done not in recorder.unfinished_recordings(rec_dir)
+          and len(recorder.unfinished_recordings(rec_dir)) == 4)
+    shutil.rmtree(rec_dir, ignore_errors=True)
+
+    import httpx
+    real_send, net_calls = httpx.Client.send, []
+
+    def spy(self, request, *a, **k):
+        net_calls.append(str(request.url))
+        return real_send(self, request, *a, **k)
+
+    httpx.Client.send = spy
+    transcriber._on_mlx_thread(transcriber._unload)
+    transcriber.warmup(cfg["whisper"]["model"])
+    httpx.Client.send = real_send
+    check("reloading Whisper makes no network calls", not net_calls,
+          f"{len(net_calls)} calls")
+
     # --- 5. Phase 2: cleanup guardrails, vocabulary, Ollama ------------------
     print("5) Cleanup pass (Phase 2)")
     from dictate import cleanup
@@ -118,6 +235,35 @@ def main() -> int:
                                         "only provided the input text."))
     check("guardrail: instruction-shaped dictation passes through",
           cleanup.passes_guardrails(ask, ask))
+    spoken = ("I need something that would make the recruiter feel like this "
+              "person is capable of the job and credible enough to get hired "
+              "for the automation engineer position at the company")
+    check("guardrail: cleanup that drops a clause is rejected",
+          not cleanup.passes_guardrails(
+              spoken, "I need something capable of the job and credible "
+                      "enough to get hired."))
+    from dictate import layout
+    listed = layout.format_layout(
+        "I want you to do three things for me. First, go through the resume "
+        "and fix any grammar mistakes. Second, make the summary shorter. "
+        "Third, add the new project. Keep it to one page.")
+    check("layout: 'first… second… third…' becomes a numbered list",
+          "\n1. Go through the resume" in listed
+          and "\n3. Add the new project." in listed
+          and listed.endswith("\n\nKeep it to one page."), repr(listed[:60]))
+    long_text = " ".join(
+        f"This is sentence number {i} about the project and what we should "
+        f"do with it next week." for i in range(8))
+    laid = layout.format_layout(long_text)
+    check("layout: long text is split into paragraphs, words unchanged",
+          "\n\n" in laid and " ".join(laid.split()) == long_text)
+    check("layout: short text and stray ordinals left alone",
+          layout.format_layout("Let's meet at 4 pm.") == "Let's meet at 4 pm."
+          and "\n" not in layout.format_layout(
+              "The second half was great. First of all the team played well."))
+    check("guardrail: short self-correction still allowed",
+          cleanup.passes_guardrails("let's meet at 3 no wait 4 pm on thursday",
+                                    "Let's meet at 4 pm on Thursday."))
 
     vocab_in = "I built it with n 8 n and fast api on a vps for cloud code"
     vocab_out = cleanup.apply_vocabulary(vocab_in, cfg["vocabulary"])
@@ -213,6 +359,12 @@ def main() -> int:
     fn_listener._handle_press(kb.Key.down)  # Fn+Down = Page Down, not a tap
     fn_event(False)
     check("Fn tap fires once; Fn+key combo does not", one_tap and len(taps) == 1,
+          f"taps={len(taps)}")
+
+    fn_event(True)   # press whose release macOS never delivered...
+    fn_event(True)   # ...then a normal tap must still count
+    fn_event(False)
+    check("a missed Fn release doesn't swallow the next tap", len(taps) == 2,
           f"taps={len(taps)}")
 
     # A raising handler must not kill the listener (pynput stops it for good).

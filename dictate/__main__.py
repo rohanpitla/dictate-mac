@@ -2,12 +2,13 @@
 
 import sys
 
-from dictate import __version__, config, permissions
+from dictate import __version__, config, log, permissions
 from dictate.app import DictateApp
 from dictate.hotkey import HOTKEY_LABELS
 
 
 def main() -> None:
+    log.install()
     print(f"Dictate v{__version__} — local voice dictation (100% on-device)")
     cfg = config.load()
 

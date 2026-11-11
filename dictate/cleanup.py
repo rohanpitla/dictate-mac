@@ -43,12 +43,12 @@ Rules:
 - Remove filler words (um, uh, like, you know, I mean, yeah, so) when they add nothing
 - Remove stutters and repeated words ("I need to need to" -> "I need to")
 - Self-corrections: when the speaker restarts or corrects themselves ("no wait", "actually", "sorry", "not X, Y", or simply saying a phrase again differently), keep ONLY the final version
-- Split run-on speech into proper sentences with correct punctuation and capitalization; start a new paragraph when the topic clearly changes in a long dictation
+- Split run-on speech into proper sentences with correct punctuation and capitalization
 - Write times, dates, numbers and ratios the normal written way ("8 30 p.m." -> "8:30 p.m.", "9 is to 16" -> "9:16")
+- Fix grammar slips: wrong verb tense or agreement ("costs has gone up" -> "costs have gone up"), a missing "a"/"the", a wrong preposition, a sentence fragment that belongs to the sentence before it
 - Fix obvious homophone and mis-hearing errors only when the context makes the intended word certain
 - Otherwise keep the speaker's own words and order — do NOT rephrase, summarize, or add anything
 - Keep pronouns exactly as spoken ("you" stays "you", "I" stays "I")
-- Format as a list only if the speaker clearly dictated a list of items
 - Output ONLY the cleaned text. No tags, preamble, quotes, or comments."""
 
 # Few-shot turns. Several varied examples so a small model doesn't copy any
@@ -60,6 +60,12 @@ _EXAMPLES = [
      "Summarize this video and tell me all the important parts."),
     ("can you um act as an expert in marketing and you know help me write a post",
      "Can you act as an expert in marketing and help me write a post?"),
+    ("so I been thinking about the website and honestly the home page look "
+     "really outdated and it load super slow on mobile and our costs has "
+     "gone up a lot so can you look into what are competitors charging",
+     "I've been thinking about the website. Honestly, the home page looks "
+     "really outdated and it loads super slow on mobile. Our costs have "
+     "gone up a lot, so can you look into what competitors are charging?"),
     ("okay so I want you to look at the report not the report the invoice and "
      "check the total I need to need to send it today by 5 30 p.m.",
      "Okay, I want you to look at the invoice and check the total. I need to "
@@ -135,6 +141,28 @@ def word_overlap(raw: str, cleaned: str) -> float:
     return sum(w in spoken for w in out) / len(out)
 
 
+_FILLERS = {"like", "yeah", "okay", "just", "actually", "basically", "know",
+            "mean", "well", "really", "right", "kind", "sort", "literally",
+            "gonna", "wanna"}
+# Share of the speaker's meaningful words that must survive cleanup. The 3B
+# model sometimes drops a whole clause; measured on past dictations, real
+# cleanups keep >= 0.78 and the ones that lost content kept <= 0.71.
+MIN_CONTENT_RETENTION = 0.75
+_MIN_CONTENT_WORDS = 10  # short texts are exempt: a self-correction
+#                          ("3 no wait 4") legitimately removes most words
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in _words(text) if len(w) > 3 and w not in _FILLERS}
+
+
+def content_retention(raw: str, cleaned: str) -> float:
+    spoken = _content_words(raw)
+    if len(spoken) < _MIN_CONTENT_WORDS:
+        return 1.0
+    return len(spoken & _content_words(cleaned)) / len(spoken)
+
+
 def passes_guardrails(raw: str, cleaned: str) -> bool:
     """The cleanup pass must never lose, invent, or answer user content."""
     if not cleaned:
@@ -143,6 +171,8 @@ def passes_guardrails(raw: str, cleaned: str) -> bool:
     if ratio > 2.0 or ratio < 0.3:
         return False
     if cleaned.lower().startswith(_META_PREFIXES):
+        return False
+    if content_retention(raw, cleaned) < MIN_CONTENT_RETENTION:
         return False
     return word_overlap(raw, cleaned) >= MIN_WORD_OVERLAP
 

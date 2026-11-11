@@ -68,6 +68,13 @@ process.
   first, then quit and relaunch Dictate.
 - **Tapping Fn opens the emoji picker or switches keyboard language**: set
   System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.
+- **Recording won't stop with the hotkey**: click the menu bar icon →
+  **Stop Recording**. Then check `~/Library/Logs/Dictate/dictate.log` — it
+  records every tap, start, stop and error with a timestamp.
+- **A dictation went missing**: the audio is in
+  `~/Library/Application Support/Dictate/recordings/` (5 newest kept). Use
+  **Re-transcribe Last Recording** in the menu, or just relaunch — unfinished
+  recordings are transcribed at startup and copied to the clipboard.
 - **Sounds play but nothing pastes**: missing **Accessibility** permission.
 - **Error sound on press**: microphone permission denied — System Settings →
   Privacy & Security → Microphone → Terminal ON, then relaunch.

@@ -11,8 +11,8 @@ import traceback
 import rumps
 from PyObjCTools import AppHelper
 
-from dictate import (__version__, appdetect, cleanup, history, latency, paster,
-                    sounds, transcriber)
+from dictate import (__version__, appdetect, cleanup, history, latency, layout,
+                    paster, recorder, sounds, transcriber)
 from dictate import config as config_mod
 from dictate.ducking import OutputMuter
 from dictate.hotkey import HOTKEY_LABELS, HotkeyListener
@@ -21,6 +21,8 @@ from dictate.recorder import MicrophoneError, Recorder
 ICON_IDLE = "🎤"
 ICON_RECORDING = "🔴"
 ICON_BUSY = "⏳"
+
+MAX_RECORDING_S = 15 * 60  # a forgotten recording stops itself
 
 MODEL_CHOICES = [
     ("Large v3 Turbo (best)", "mlx-community/whisper-large-v3-turbo"),
@@ -65,10 +67,15 @@ class DictateApp(rumps.App):
         self._recording = False
         self._pending = 0
         self._jobs: queue.Queue = queue.Queue()
+        # The hotkey thread and the menu only post events here; the
+        # controller thread does the actual microphone work. A stuck audio
+        # device can therefore never freeze the hotkey or the menu.
+        self._events: queue.Queue = queue.Queue()
         self._hotkey = self._make_listener(self._hotkey_name)
 
     def _make_listener(self, hotkey_name: str) -> HotkeyListener:
-        return HotkeyListener(hotkey_name, on_tap=self._on_hotkey_tap)
+        return HotkeyListener(hotkey_name,
+                              on_tap=lambda: self._events.put("toggle"))
 
     # ------------------------------------------------------------- menu --
     def _build_menu(self) -> None:
@@ -101,6 +108,11 @@ class DictateApp(rumps.App):
 
         self.menu = [
             self._info_item,
+            None,
+            rumps.MenuItem("Stop Recording",
+                           callback=lambda _: self._events.put("stop")),
+            rumps.MenuItem("Re-transcribe Last Recording",
+                           callback=self._on_retranscribe_last),
             None,
             self._enabled_item,
             self._raw_mode_item,
@@ -135,16 +147,18 @@ class DictateApp(rumps.App):
             return
         # Disabling mid-recording aborts it — the hotkey is ignored while
         # disabled, so the recording could otherwise never be stopped.
+        self._events.put("discard")
+
+    def _on_retranscribe_last(self, _item) -> None:
+        """Transcribe the newest saved recording again -> clipboard + history."""
+        saved = recorder.saved_recordings()
         with self._state_lock:
-            was_recording = self._recording
-            self._recording = False
-        if was_recording:
-            wav_path = self._recorder.stop()
-            if wav_path is not None:
-                wav_path.unlink(missing_ok=True)
-            if self._muter is not None:
-                self._muter.unmute_async()
-            self._refresh_icon()
+            if self._recording:
+                saved = saved[:-1]  # the newest file is still being written
+        if not saved:
+            rumps.alert(title="Dictate", message="No saved recordings yet.")
+            return
+        self._enqueue(saved[-1], 0.0, None, recovered=True)
 
     def _on_choose_hotkey(self, item) -> None:
         new_key = next(k for k, lbl in HOTKEY_LABELS.items()
@@ -152,8 +166,9 @@ class DictateApp(rumps.App):
         if new_key == self._hotkey_name:
             return
         old = self._hotkey
-        self._hotkey = self._make_listener(new_key)
-        self._hotkey.start()
+        new = self._make_listener(new_key)
+        new.start()
+        self._hotkey = new  # assigned once alive, so the health check never sees a dead one
         old.stop()
         self._hotkey_name = new_key
         for other in self._hotkey_menu.values():
@@ -206,13 +221,31 @@ class DictateApp(rumps.App):
     def start_background_services(self) -> None:
         threading.Thread(target=transcriber.warmup, args=(self._model,),
                          daemon=True, name="dictate-warmup").start()
-        threading.Thread(target=cleanup.warmup, args=(self._config,),
-                         daemon=True, name="dictate-ollama-warmup").start()
+        ollama_warmup = threading.Thread(
+            target=cleanup.warmup, args=(self._config,), daemon=True,
+            name="dictate-ollama-warmup")
+        ollama_warmup.start()
         threading.Thread(target=self._worker, daemon=True,
                          name="dictate-pipeline").start()
         threading.Thread(target=self._idle_unloader, daemon=True,
                          name="dictate-idle-unload").start()
+        threading.Thread(target=self._recover_unfinished, args=(ollama_warmup,),
+                         daemon=True, name="dictate-recover").start()
         self._hotkey.start()
+        threading.Thread(target=self._controller, daemon=True,
+                         name="dictate-controller").start()
+
+    def _recover_unfinished(self, ollama_warmup: threading.Thread) -> None:
+        """Recordings whose text never reached history (the app froze, crashed
+        or was restarted mid-dictation) are transcribed now."""
+        unfinished = recorder.unfinished_recordings()
+        if not unfinished:
+            return
+        ollama_warmup.join(40)  # so recovered text gets cleaned up too
+        for path in unfinished:
+            print(f"[dictate] recovering unfinished recording {path.name} "
+                  f"({recorder.duration_s(path):.0f}s)")
+            self._enqueue(path, 0.0, None, recovered=True)
 
     def _idle_unloader(self) -> None:
         while True:
@@ -225,7 +258,7 @@ class DictateApp(rumps.App):
                 except Exception as exc:
                     print(f"[dictate] idle unload failed: {exc}", file=sys.stderr)
 
-    # AppKit UI may only be touched from the main thread; hotkey callbacks
+    # AppKit UI may only be touched from the main thread; the controller
     # and the pipeline worker run on background threads.
     def _refresh_icon(self) -> None:
         with self._state_lock:
@@ -237,31 +270,65 @@ class DictateApp(rumps.App):
                 icon = ICON_IDLE
         AppHelper.callAfter(lambda: setattr(self, "title", icon))
 
-    def _on_hotkey_tap(self) -> None:
-        """First tap starts recording; the next tap stops and transcribes."""
-        if not self._enabled:
-            return
+    # ------------------------------------------------------- controller --
+    def _controller(self) -> None:
+        while True:
+            try:
+                event = self._events.get(timeout=1.0)
+            except queue.Empty:
+                event = "tick"
+            try:
+                self._handle_event(event)
+            except Exception:
+                print(f"[dictate] controller failed on {event!r}:", file=sys.stderr)
+                traceback.print_exc()
+
+    def _handle_event(self, event: str) -> None:
         with self._state_lock:
-            stopping = self._recording
-            self._recording = not stopping
+            recording = self._recording
+        if event == "toggle":
+            if not self._enabled:
+                return
+            if recording:
+                self._finish_recording("tap")
+            else:
+                self._start_recording()
+        elif event == "stop":
+            if recording:
+                self._finish_recording("menu")
+        elif event == "discard":
+            if recording:
+                self._finish_recording("disabled", discard=True)
+        elif event == "tick":
+            if recording and self._recorder.stalled:
+                sounds.play("error")
+                print("[dictate] microphone stopped sending audio — stopping "
+                      "and transcribing what was captured", file=sys.stderr)
+                self._finish_recording("mic stalled")
+            elif recording and self._recorder.elapsed > MAX_RECORDING_S:
+                self._finish_recording("15-minute limit")
+            if not self._hotkey.is_alive():
+                print("[dictate] hotkey listener died — restarting it",
+                      file=sys.stderr)
+                new = self._make_listener(self._hotkey_name)
+                new.start()
+                self._hotkey = new
 
-        if stopping:
-            self._finish_recording()
-            return
-
+    def _start_recording(self) -> None:
         try:
             self._recorder.start()
         except MicrophoneError as exc:
-            with self._state_lock:
-                self._recording = False
             sounds.play("error")
             print(f"[dictate] microphone unavailable: {exc}\n"
                   "  If you just denied the mic prompt: System Settings -> "
                   "Privacy & Security -> Microphone -> enable Terminal, then relaunch.",
                   file=sys.stderr)
             return
+        with self._state_lock:
+            self._recording = True
         sounds.play("start")
         self._refresh_icon()
+        print("[dictate] recording started")
         if self._muter is not None:
             self._muter.mute_async()
         # Both models are freed when idle; reload them while the user talks.
@@ -270,51 +337,66 @@ class DictateApp(rumps.App):
             threading.Thread(target=cleanup.preload, args=(self._config,),
                              daemon=True, name="dictate-preload").start()
 
-    def _finish_recording(self) -> None:
-        """Stop the recorder (fast) and queue the audio for transcription.
-
-        Runs on the hotkey listener thread; recorder.stop() is milliseconds.
-        """
+    def _finish_recording(self, reason: str, discard: bool = False) -> None:
+        """Stop the recorder and queue the audio for transcription."""
         t0 = time.monotonic()
-        wav_path = self._recorder.stop()
+        path = self._recorder.stop()
         record_ms = (time.monotonic() - t0) * 1000
+        with self._state_lock:
+            self._recording = False
         # Unmute now so the video/music resumes the moment dictation ends —
         # and so the stop sound is audible.
         if self._muter is not None:
             self._muter.unmute_async()
-        if wav_path is None:  # accidental tap / empty recording
+        if path is None or discard:  # accidental tap, or dictation disabled
+            if path is not None:
+                path.unlink(missing_ok=True)
             self._refresh_icon()
+            print(f"[dictate] recording discarded ({reason}, too short or disabled)")
             return
         sounds.play("stop")
+        print(f"[dictate] recording stopped ({reason}): "
+              f"{recorder.duration_s(path):.1f}s of audio")
         # Capture the app that will receive the paste NOW, while it's frontmost
-        bundle_id = appdetect.frontmost_bundle_id()
+        self._enqueue(path, record_ms, appdetect.frontmost_bundle_id())
+
+    # --------------------------------------------------------- pipeline --
+    def _enqueue(self, path, record_ms: float, bundle_id: str | None,
+                 recovered: bool = False) -> None:
         with self._state_lock:
             self._pending += 1
         self._refresh_icon()
-        self._jobs.put((wav_path, record_ms, bundle_id))
+        self._jobs.put((path, record_ms, bundle_id, recovered))
 
     def _worker(self) -> None:
         while True:
             job = self._jobs.get()
             try:
                 self._process(*job)
+            except Exception:
+                traceback.print_exc()
             finally:
                 with self._state_lock:
                     self._pending -= 1
                 self._refresh_icon()
 
-    def _process(self, wav_path, record_ms: float,
-                 bundle_id: str | None = None) -> None:
+    def _process(self, path, record_ms: float, bundle_id: str | None = None,
+                 recovered: bool = False) -> None:
+        """Transcribe -> clean up -> paste -> history.
+
+        `recovered` recordings (left over from a crash, or re-transcribed
+        from the menu) go to the clipboard instead of being pasted: the
+        cursor is no longer where the user was dictating.
+        """
         try:
             t1 = time.monotonic()
             raw = transcriber.transcribe(
-                str(wav_path), self._model,
+                str(path), self._model,
                 transcriber.vocabulary_prompt(self._config.get("vocabulary", {})),
                 self._config["whisper"].get("language") or None)
-            if raw and transcriber.looks_like_hallucination(raw, str(wav_path)):
-                if self._debug:
-                    print(f"[dictate] dropped whisper hallucination on quiet "
-                          f"audio: {raw!r}")
+            if raw and transcriber.looks_like_hallucination(raw, str(path)):
+                print(f"[dictate] dropped whisper hallucination on quiet "
+                      f"audio: {raw!r}")
                 raw = ""
             transcribe_ms = (time.monotonic() - t1) * 1000
 
@@ -328,29 +410,56 @@ class DictateApp(rumps.App):
                                                         style_hint)
                 if mode != "default":
                     stage = f"{stage}+{mode}"
+                # chat apps (Slack, Messages) get one plain message
+                if (mode != "casual"
+                        and self._config["general"].get("smart_formatting", True)):
+                    text = layout.format_layout(text)
+            if recovered:
+                stage += "+recovered"
             cleanup_ms = (time.monotonic() - t2) * 1000
 
             paste_ms = 0.0
             if text:
-                t3 = time.monotonic()
-                paster.paste(text)
-                paste_ms = (time.monotonic() - t3) * 1000
+                # History first: once it's there the dictation can't be lost,
+                # whatever happens to the paste.
                 history.append(raw=raw, text=text, stage=stage, latency_ms={
                     "finalize": record_ms, "transcribe": transcribe_ms,
-                    "cleanup": cleanup_ms, "paste": paste_ms,
+                    "cleanup": cleanup_ms, "paste": 0,
                 })
                 AppHelper.callAfter(self._refresh_history_menu)
-            elif self._debug:
+                t3 = time.monotonic()
+                if recovered:
+                    paster.set_clipboard_text(text)
+                    sounds.play("stop")
+                    self._notify("Recovered a dictation",
+                                 "Copied to your clipboard and saved in History.")
+                else:
+                    paster.paste(text)
+                paste_ms = (time.monotonic() - t3) * 1000
+                recorder.mark_done(path)
+            else:
                 print("[dictate] empty transcript (silence?) — nothing to paste")
+                path.unlink(missing_ok=True)
 
-            if self._debug:
-                print(f"[dictate] latency ms — finalize: {record_ms:.0f}  "
-                      f"transcribe: {transcribe_ms:.0f}  "
-                      f"cleanup: {cleanup_ms:.0f} ({stage})  "
-                      f"paste: {paste_ms:.0f}  | text: {text[:80]!r}")
+            print(f"[dictate] latency ms — finalize: {record_ms:.0f}  "
+                  f"transcribe: {transcribe_ms:.0f}  "
+                  f"cleanup: {cleanup_ms:.0f} ({stage})  "
+                  f"paste: {paste_ms:.0f}  | text: {text[:80]!r}")
         except Exception:
             sounds.play("error")
-            print("[dictate] transcription pipeline failed:", file=sys.stderr)
+            print("[dictate] transcription pipeline failed — the audio is kept; "
+                  "use 'Re-transcribe Last Recording' in the menu:",
+                  file=sys.stderr)
             traceback.print_exc()
+            if recovered:
+                recorder.mark_done(path)  # don't retry it on every launch
         finally:
-            wav_path.unlink(missing_ok=True)
+            recorder.prune()
+
+    def _notify(self, title: str, message: str) -> None:
+        def show() -> None:
+            try:
+                rumps.notification("Dictate", title, message)
+            except Exception as exc:  # needs an app bundle on some setups
+                print(f"[dictate] {title}: {message} (notification failed: {exc})")
+        AppHelper.callAfter(show)

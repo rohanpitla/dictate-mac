@@ -10,8 +10,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 _MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
-_mlx_broken = False
 _fallback_model = None
+_local_paths: dict[str, str] = {}
 _lock = threading.Lock()
 # Every MLX call runs on this one thread. MLX GPU streams are per-thread: a
 # model loaded on one thread and used on another aborts the whole process
@@ -29,16 +29,19 @@ class TranscriptionError(Exception):
 
 
 def _load_wav(wav_path: str):
-    """Decode a 16 kHz mono 16-bit WAV to float32 ourselves.
+    """Decode 16 kHz mono 16-bit audio to float32 ourselves: a WAV file, or
+    the recorder's headerless ".pcm" (readable even if recording was cut off).
 
     mlx-whisper shells out to ffmpeg when given a file path; passing the
-    samples directly removes that dependency. Dictate's recorder always
-    produces this exact format.
+    samples directly removes that dependency.
     """
     import wave
 
     import numpy as np
 
+    if str(wav_path).endswith(".pcm"):
+        data = np.fromfile(wav_path, dtype=np.int16)
+        return data.astype(np.float32) / 32768.0
     with wave.open(wav_path) as wf:
         if (wf.getframerate(), wf.getnchannels(), wf.getsampwidth()) != (16_000, 1, 2):
             raise ValueError(
@@ -100,23 +103,33 @@ def _on_mlx_thread(fn, *args):
     return _mlx_thread.submit(fn, *args).result()
 
 
-def _transcribe_mlx(wav_path: str, model: str, prompt: str | None,
-                    language: str | None) -> str:
-    audio = trim_silence(_load_wav(wav_path))
-    if len(audio) == 0:
-        return ""
-    return _on_mlx_thread(_run_whisper, audio, model, prompt, language)
+def local_model_path(model: str) -> str:
+    """The model's folder on disk if it is already downloaded, else the repo
+    name. Given a repo name, mlx-whisper asks huggingface.co on EVERY load —
+    with a bad connection that stalled a reload for over a minute."""
+    if model not in _local_paths:
+        try:
+            from huggingface_hub import snapshot_download
+
+            _local_paths[model] = snapshot_download(model, local_files_only=True)
+        except Exception:
+            return model  # not downloaded yet: the first load fetches it
+    return _local_paths[model]
 
 
 def is_garbage_segment(seg: dict) -> bool:
     """Whisper's own failure signals. On a cough, breathing or keyboard
     clicks it emits loops ("!!!!", "Vocabulary, Vocabulary…", CJK runs) or
-    stock phrases ("Closed Captioning by"); real speech scores around
-    avg_logprob -0.3 and compression_ratio ~1."""
+    short stock phrases ("Closed Captioning by"); real speech scores around
+    avg_logprob -0.3 and compression_ratio ~1.
+
+    A low-confidence segment is only dropped when it is short: a whole
+    mumbled sentence is still the user's words and must be kept.
+    """
     logprob = seg.get("avg_logprob", 0.0)
     return (logprob != logprob  # NaN
-            or logprob < -1.0
-            or seg.get("compression_ratio", 0.0) > 2.4)
+            or seg.get("compression_ratio", 0.0) > 2.4
+            or (logprob < -1.0 and len(seg.get("text", "").split()) <= 4))
 
 
 def _run_whisper(audio, model: str, prompt: str | None,
@@ -124,34 +137,47 @@ def _run_whisper(audio, model: str, prompt: str | None,
     import mlx.core as mx
     import mlx_whisper
 
-    global _last_used
-    try:
-        result = mlx_whisper.transcribe(
-            audio, path_or_hf_repo=model, initial_prompt=prompt,
+    def run(temperature):
+        return mlx_whisper.transcribe(
+            audio, path_or_hf_repo=local_model_path(model),
+            initial_prompt=prompt,
             language=language,  # skipping detection halves the time
             # Feeding each window's text into the next lets one
             # hallucination snowball into the same sentence repeated.
             condition_on_previous_text=False,
-            # No re-decoding at higher temperatures: on noise it retried
-            # five times (11-16 s) only to produce garbage we drop anyway.
-            temperature=0.0,
-        )
+            temperature=temperature,
+        )["segments"]
+
+    global _last_used
+    try:
+        # First pass without re-decoding at higher temperatures: on pure
+        # noise those retries took 11-16 s to produce garbage anyway.
+        segments = run(0.0)
+        bad = sum(is_garbage_segment(s) for s in segments)
+        if 0 < bad < len(segments):
+            # Garbage mixed in with real speech: the garbled stretch may hold
+            # real words, so give Whisper its full retry ladder.
+            print(f"[dictate] {bad} of {len(segments)} segments unclear; "
+                  "re-transcribing carefully")
+            segments = run((0.0, 0.2, 0.4, 0.6, 0.8, 1.0))
     finally:
         _last_used = time.monotonic()
         mx.clear_cache()  # MLX otherwise keeps ~0.5 GB of buffers around
-    kept = [s["text"] for s in result["segments"] if not is_garbage_segment(s)]
+    kept = [s["text"] for s in segments if not is_garbage_segment(s)]
+    if len(kept) < len(segments):
+        print(f"[dictate] dropped {len(segments) - len(kept)} noise segment(s): "
+              f"{[s['text'][:30] for s in segments if is_garbage_segment(s)]}")
     return "".join(kept).strip()
 
 
 def preload(model: str = _MLX_MODEL) -> None:
     """Load the Whisper model while the user is still speaking. Returns at
     once; the load runs on the MLX thread ahead of the transcription."""
-    if not _mlx_broken:
-        future = _mlx_thread.submit(_load_model, model)
-        future.add_done_callback(
-            lambda f: f.exception() and print(
-                f"[dictate] whisper preload failed: {f.exception()}",
-                file=sys.stderr))
+    future = _mlx_thread.submit(_load_model, model)
+    future.add_done_callback(
+        lambda f: f.exception() and print(
+            f"[dictate] whisper preload failed: {f.exception()}",
+            file=sys.stderr))
 
 
 def _load_model(model: str) -> None:
@@ -159,68 +185,74 @@ def _load_model(model: str) -> None:
     from mlx_whisper.transcribe import ModelHolder
 
     global _last_used
-    ModelHolder.get_model(model, mx.float16)
+    ModelHolder.get_model(local_model_path(model), mx.float16)
     _last_used = time.monotonic()
 
 
 def unload_if_idle() -> None:
     """Free the Whisper model's memory if it hasn't been used for a while."""
-    _on_mlx_thread(_unload_if_idle)
+    _on_mlx_thread(_unload, IDLE_UNLOAD_S)
 
 
-def _unload_if_idle() -> None:
+def _unload(min_idle_s: float = 0.0) -> None:
     import gc
 
     import mlx.core as mx
     from mlx_whisper.transcribe import ModelHolder
 
     if (ModelHolder.model is None
-            or time.monotonic() - _last_used < IDLE_UNLOAD_S):
+            or time.monotonic() - _last_used < min_idle_s):
         return
     ModelHolder.model = None
     ModelHolder.model_path = None
     gc.collect()
     mx.clear_cache()
-    print("[dictate] whisper model unloaded after idle (reloads on next tap)")
+    print("[dictate] whisper model unloaded (reloads on next tap)")
 
 
-def _transcribe_fallback(wav_path: str) -> str:
+def _transcribe_fallback(audio) -> str:
     global _fallback_model
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        raise TranscriptionError(
-            "MLX failed and faster-whisper (the spec fallback) is not installed. "
-            "Run: .venv/bin/pip install faster-whisper"
-        ) from exc
+        raise TranscriptionError("faster-whisper fallback not installed") from exc
     with _lock:
         if _fallback_model is None:
             _fallback_model = WhisperModel("small.en", device="cpu", compute_type="int8")
-    segments, _info = _fallback_model.transcribe(wav_path)
+    segments, _info = _fallback_model.transcribe(audio)
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 def transcribe(wav_path: str, model: str = _MLX_MODEL,
                prompt: str | None = None, language: str | None = None) -> str:
-    """Transcribe a WAV file. Raises TranscriptionError only if both engines fail.
+    """Transcribe an audio file. Raises TranscriptionError if it cannot.
 
     language: e.g. "en"; None auto-detects (slower, and noise can come out
     as another language).
+
+    A failure never disables the engine: one MLX error (e.g. out of memory)
+    used to switch permanently to an uninstalled fallback, so every later
+    dictation failed until restart. Now: reload the model and try again.
     """
-    global _mlx_broken
-    if not _mlx_broken:
+    audio = trim_silence(_load_wav(wav_path))
+    if len(audio) == 0:
+        return ""
+    error: Exception | None = None
+    for attempt in (1, 2):
         try:
-            return _transcribe_mlx(wav_path, model, prompt, language)
+            return _on_mlx_thread(_run_whisper, audio, model, prompt, language)
         except Exception as exc:
-            _mlx_broken = True
-            print(f"[dictate] mlx-whisper failed ({exc!r}); falling back to "
-                  f"faster-whisper small.en on CPU", file=sys.stderr)
+            error = exc
+            print(f"[dictate] whisper failed (attempt {attempt}): {exc!r}; "
+                  "reloading the model", file=sys.stderr)
+            try:
+                _on_mlx_thread(_unload)
+            except Exception:
+                pass
     try:
-        return _transcribe_fallback(wav_path)
-    except TranscriptionError:
-        raise
+        return _transcribe_fallback(audio)
     except Exception as exc:
-        raise TranscriptionError(str(exc)) from exc
+        raise TranscriptionError(f"whisper failed twice: {error!r}") from exc
 
 
 # Whisper's classic hallucinations on (near-)silent audio. Only dropped when

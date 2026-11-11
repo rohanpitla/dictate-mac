@@ -80,6 +80,9 @@ class HotkeyListener:
         if self._key is None:
             raise ValueError(f"Unsupported hotkey: {hotkey!r}")
         self._on_tap = on_tap
+        # Modifier keys never auto-repeat, so a second press without a
+        # release in between means macOS dropped the release event.
+        self._auto_repeats = hotkey == "f19"
         self._held = False
         self._combo = False  # another key was pressed while the hotkey was down
         self._listener = _Listener(
@@ -93,9 +96,13 @@ class HotkeyListener:
     def stop(self) -> None:
         self._listener.stop()
 
+    def is_alive(self) -> bool:
+        return self._listener.is_alive()
+
     def _handle_press(self, key) -> None:
         if key == self._key:
-            if not self._held:  # macOS auto-repeats held keys
+            # A stale "held" (missed release) must not swallow this tap.
+            if not self._held or not self._auto_repeats:
                 self._held = True
                 self._combo = False
         elif self._held:

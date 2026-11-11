@@ -13,6 +13,9 @@ mute_while_dictating = true
 # Skip the LLM cleanup everywhere and paste raw transcripts (also toggleable
 # from the menu bar)
 raw_mode = false
+# Break long dictations into short paragraphs, and turn "first… second…
+# third…" into a numbered list. Set to false for one plain paragraph.
+smart_formatting = true
 
 [whisper]
 # MLX model repo (Apple Silicon). Fallback engine uses faster-whisper small.en on CPU.

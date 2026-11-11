@@ -10,7 +10,8 @@ CONFIG_PATH = PROJECT_ROOT / "config.toml"
 
 DEFAULTS = {
     "general": {"hotkey": "right_option", "debug": True,
-                "mute_while_dictating": True, "raw_mode": False},
+                "mute_while_dictating": True, "raw_mode": False,
+                "smart_formatting": True},
     "app_modes": {},
     "whisper": {"model": "mlx-community/whisper-large-v3-turbo",
                 "language": "en"},

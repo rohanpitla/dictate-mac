@@ -45,6 +45,10 @@ the raw transcript — you never lose what you said.
   Fn, set System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.
 - **Audio ducking** — mutes other system audio while you're dictating so it
   isn't picked up by the mic.
+- **Dictations can't be lost** — audio is saved to disk while you speak. If
+  the app freezes or is restarted, the recording is transcribed on the next
+  launch and copied to your clipboard. Only the 5 newest recordings are
+  kept; "Re-transcribe Last Recording" in the menu redoes the latest one.
 - **Clipboard-safe pasting** — your existing clipboard (including images and
   files, not just text) is restored right after the paste.
 - **Menu bar settings** — enable/disable, hotkey choice, Whisper model size,
