@@ -165,8 +165,8 @@ def _run_whisper(audio, model: str, prompt: str | None,
         mx.clear_cache()  # MLX otherwise keeps ~0.5 GB of buffers around
     kept = [s["text"] for s in segments if not is_garbage_segment(s)]
     if len(kept) < len(segments):
-        print(f"[dictate] dropped {len(segments) - len(kept)} noise segment(s): "
-              f"{[s['text'][:30] for s in segments if is_garbage_segment(s)]}")
+        # count only: the log must never contain what was said
+        print(f"[dictate] dropped {len(segments) - len(kept)} noise segment(s)")
     return "".join(kept).strip()
 
 
@@ -234,7 +234,17 @@ def transcribe(wav_path: str, model: str = _MLX_MODEL,
     used to switch permanently to an uninstalled fallback, so every later
     dictation failed until restart. Now: reload the model and try again.
     """
-    audio = trim_silence(_load_wav(wav_path))
+    return transcribe_samples(_load_wav(wav_path), model, prompt, language)
+
+
+def transcribe_samples(samples, model: str = _MLX_MODEL,
+                       prompt: str | None = None,
+                       language: str | None = None) -> str:
+    """Transcribe float32 samples (16 kHz mono, -1..1) held in memory.
+
+    Meeting Mode uses this so meeting audio never touches the disk.
+    """
+    audio = trim_silence(samples)
     if len(audio) == 0:
         return ""
     error: Exception | None = None

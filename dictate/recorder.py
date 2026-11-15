@@ -28,6 +28,12 @@ class MicrophoneError(Exception):
 
 
 def _default_stream(callback):
+    from dictate import micstream
+
+    if micstream.available():
+        return micstream.MicStream(callback)
+    # Fallback when the helper cannot be built. Its close can deadlock in the
+    # audio system (see micstream.py), which is why the helper is preferred.
     import sounddevice as sd
 
     # 50 ms blocks: ~20 callbacks a second instead of ~1,000
@@ -108,6 +114,7 @@ class Recorder:
         if self._stream is not None:
             return
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._dir.chmod(0o700)  # recordings are private to this account
         stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
         path = self._dir / f"{stamp}.pcm"
 

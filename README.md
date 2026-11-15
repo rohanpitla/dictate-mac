@@ -100,3 +100,54 @@ integration (paste simulation, clipboard, frontmost-app detection) ·
 No cloud/API transcription option, no account system, no auto-update, no
 Electron or Swift rewrite, no real-time streaming transcription, no UI
 beyond the menu bar.
+
+## Meeting Mode (experimental, off by default)
+
+A private live assistant for calls (Google Meet, Zoom, Teams, anything your
+Mac plays). It has passed its automated tests but has not been used in real
+calls yet. To try it, set `enabled = true` under `[meeting]` in `config.toml`,
+restart Dictate, then menu bar > **Start Meeting Mode…**
+
+- **Live transcript** of you ("You") and everyone else ("Them"). No bot joins the call.
+- **Catch-up** every few minutes: what was decided, what is open, what was asked of you.
+- **Talking points** when someone asks you a question or says your name, or
+  on demand by tapping Right Option.
+- **A panel only you can see**: it is excluded from screen sharing,
+  screenshots and recordings. The menu bar icon does not change, so nothing
+  in a shared screen shows that Meeting Mode is on; the panel is your sign
+  that it is listening. If the panel cannot be opened hidden, Meeting Mode
+  stops.
+
+### Setup
+
+1. Install Apple's command line tools once: `xcode-select --install`
+   (Dictate builds its small audio helper from `helper/sysaudio.swift` on first use).
+2. System Settings > Privacy & Security > **Screen & System Audio Recording**:
+   turn on the app you start Dictate from (e.g. Terminal), then reopen it.
+3. In `config.toml` under `[meeting]`, set `your_name`, and `base_url` /
+   `model` for your provider (any OpenAI-compatible API).
+4. Menu bar > **Set Meeting API Key…** and paste your own key.
+   Without a key you still get the live transcript, with no suggestions.
+5. Optional: put your agenda and facts in `meeting_notes.md` next to
+   `config.toml`; they are used to make suggestions specific.
+
+### Privacy and security
+
+- **Audio never leaves your Mac** and is never written to disk in Meeting Mode.
+- **The transcript lives in memory** and is erased when you stop. It is saved
+  only if you set `save_transcript = true` (private to your account, last 10 kept).
+- **Only transcript text and your notes are sent**, to the one HTTPS endpoint
+  in `base_url`, and only if a key is saved. Plain `http://` is refused.
+- **The API key is stored in the macOS Keychain**, never in a file or a log.
+  Use your own key; never share one.
+- **A key is tied to its provider's address** and is only ever sent there. If
+  `base_url` changes, the old key is not used; you are asked for a new one.
+- **The start dialog names the address** your transcript text will go to.
+  Do not use a `config.toml` someone else gives you without reading `base_url`.
+- **Nothing said in a meeting or a dictation is written to the log.**
+- **Screen Recording permission is used for audio only**: the helper never
+  reads screen pixels, opens no files and makes no network connections.
+- **It never starts by itself**: every start asks for confirmation, and a
+  session stops on its own after 4 hours.
+- **Consent:** recording or transcribing people without telling them is
+  illegal in some places. Check the rules that apply to your meeting.

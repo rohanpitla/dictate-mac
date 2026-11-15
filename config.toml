@@ -46,3 +46,33 @@ fallback_model = "llama3.2:3b"
 "hvac" = "HVAC"
 "vps" = "VPS"
 "fast api" = "FastAPI"
+"whisper" = "Whisper"
+"vespa model" = "Whisper model"
+
+# Meeting Mode (EXPERIMENTAL, off by default): a live transcript, catch-ups
+# and talking points in a panel hidden from screen sharing. Set enabled = true
+# and restart Dictate to get "Start Meeting Mode…" in the menu bar.
+# The API key is NOT set here. Use menu bar > "Set Meeting API Key…", which
+# stores it in your macOS Keychain. Never paste a key into this file.
+[meeting]
+enabled = false
+# Any OpenAI-compatible endpoint. Must be https://. Check your provider's
+# docs for the exact address and model name. Default: DeepSeek's fast model
+# (address and name checked against DeepSeek's docs in November 2026).
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+# Extra fields sent with every request. This one turns off DeepSeek's
+# "thinking" mode, which is on by default and makes replies slow. Other
+# providers use different switches (or none): set  request_extra = {}  for them.
+request_extra = { thinking = { type = "disabled" } }
+# Your first name: the assistant speaks up when someone says it
+your_name = "Rohan"
+# Minutes between catch-up summaries
+summary_minutes = 3
+# Tap this key for "what should I say now?" (must differ from the dictation hotkey)
+suggest_hotkey = "right_option"
+# true if you always wear headphones in meetings (lets you talk over others)
+headphones = false
+# true saves each meeting's transcript to
+# ~/Library/Application Support/Dictate/meetings/ (last 10 kept). Off = nothing saved.
+save_transcript = false

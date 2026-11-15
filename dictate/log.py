@@ -46,9 +46,14 @@ class _Tee:
 def install() -> None:
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LOG_PATH.parent.chmod(0o700)  # the log can quote dictated text
         if LOG_PATH.exists() and LOG_PATH.stat().st_size > MAX_BYTES:
             LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
         file = open(LOG_PATH, "a", encoding="utf-8")
+        LOG_PATH.chmod(0o600)
+        old = LOG_PATH.with_suffix(".log.1")
+        if old.exists():
+            old.chmod(0o600)
     except OSError as exc:
         print(f"[dictate] could not open log file: {exc}", file=sys.stderr)
         return

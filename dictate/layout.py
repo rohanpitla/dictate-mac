@@ -48,6 +48,13 @@ _TOPIC_SHIFT = re.compile(
 # …and one starting like this continues the previous sentence's thought.
 _CONTINUATION = re.compile(
     r"^(?:and|but|because|so that|which|or)\b", re.IGNORECASE)
+# A sentence that points back at the one before it ("Is that possible?",
+# "That would help.") belongs in the same paragraph, as does a very short one.
+_POINTS_BACK = re.compile(
+    r"^(?:(?:is|was|does|did|would|could|can|will|isn't|doesn't|wouldn't)\s+)?"
+    r"(?:that|this|it|those|these|they)\b", re.IGNORECASE)
+_SHORT_FOLLOW_UP_WORDS = 4
+
 
 
 def split_sentences(text: str) -> list[str]:
@@ -128,11 +135,15 @@ def _paragraphs(sentences: list[str]) -> list[str]:
         current = groups[-1]
         size = sum(_words(s) for s in current)
         shift = bool(_TOPIC_SHIFT.match(sentence))
-        # prefer not to break before "And…"/"But…", but never let a
-        # paragraph run past 1.5x the limit
-        too_long = size >= MAX_PARAGRAPH_WORDS and (
-            not _CONTINUATION.match(sentence)
-            or size >= MAX_PARAGRAPH_WORDS * 1.5)
+        # "And…"/"But…" may run a paragraph a little over; a sentence that
+        # points back at the previous one may run it further
+        if _POINTS_BACK.match(sentence) or _words(sentence) <= _SHORT_FOLLOW_UP_WORDS:
+            limit = MAX_PARAGRAPH_WORDS * 1.5
+        elif _CONTINUATION.match(sentence):
+            limit = MAX_PARAGRAPH_WORDS * 1.25
+        else:
+            limit = MAX_PARAGRAPH_WORDS
+        too_long = size >= limit
         if current and ((shift and size >= MIN_PARAGRAPH_WORDS) or too_long):
             groups.append([])
         groups[-1].append(sentence)

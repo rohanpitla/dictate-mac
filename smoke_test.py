@@ -493,7 +493,370 @@ def main() -> int:
               "send the invoice to the client", str(quiet)))
     quiet.unlink(); loud.unlink()
 
+    from dictate import layout
+    follow_up = layout.format_layout(
+        "I'm testing it now and seeing how it works. Still run a diagnostic "
+        "and see if there's anything else that we need to work on to fix "
+        "that model and make sure everything is right. What happened to the "
+        "feature that we talked about, the one in the meetings? Is that "
+        "possible? First we need to perfect the speaking feature and then we "
+        "can work on the meetings feature.")
+    check("a follow-up question stays with the sentence it refers to",
+          "meetings? Is that possible?\n\nFirst we need" in follow_up, follow_up)
+
+    _mic_helper_checks()
+    _meeting_checks()
     return _summary()
+
+
+def _mic_helper_checks() -> None:
+    """The microphone runs in a helper process so that stopping can never
+    hang. Tested with stand-in helpers: no real microphone is opened."""
+    import os
+    import stat
+
+    from dictate import micstream
+
+    print("\n== 8b. Microphone helper ==")
+    folder = Path(tempfile.mkdtemp())
+
+    def fake_helper(name: str, body: str) -> Path:
+        path = folder / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(stat.S_IRWXU)
+        return path
+
+    real_binary, real_armed = micstream.BINARY, micstream._armed
+    micstream._armed = None
+    try:
+        # a helper that sends audio once told to start, then never exits
+        micstream.BINARY = fake_helper(
+            "good", "head -c 1 >/dev/null; while :; do printf '%01600d' 0; sleep 0.05; done\n")
+        got: list = []
+        stream = micstream.MicStream(lambda indata, *_: got.append(len(indata)))
+        stream.start()
+        pid = stream._proc.pid
+        t = time.monotonic()
+        stream.abort()
+        stop_ms = (time.monotonic() - t) * 1000
+        time.sleep(0.3)
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        check("mic helper delivers audio", bool(got) and got[0] == 800, f"{got[:1]}")
+        check("stopping the mic returns at once and the helper is gone",
+              stop_ms < 100 and not alive, f"{stop_ms:.1f} ms")
+
+        # a helper that hangs without ever producing audio
+        micstream.shutdown()
+        micstream.BINARY = fake_helper("hung", "sleep 60\n")
+        stream = micstream.MicStream(lambda *a: None)
+        t = time.monotonic()
+        try:
+            stream.start()
+            check("a mic helper that hangs gives an error, not a freeze", False)
+        except RuntimeError:
+            check("a mic helper that hangs gives an error, not a freeze",
+                  time.monotonic() - t < micstream.FIRST_AUDIO_TIMEOUT_S + 1)
+    finally:
+        micstream.shutdown()
+        micstream.BINARY, micstream._armed = real_binary, real_armed
+
+
+def _meeting_checks() -> None:
+    """Meeting Mode, with fake audio devices and a fake provider: no real
+    microphone, network or Keychain item of the user's is touched."""
+    import contextlib
+    import io
+    import os
+    import re
+    import stat
+
+    import numpy as np
+
+    from dictate import config
+    from dictate.meeting import brain as brain_mod
+    from dictate.meeting import keychain, session as session_mod
+    from dictate.meeting.live import Chunker
+    from dictate.meeting.overlay import Overlay
+
+    print("\n== 9. Meeting Mode ==")
+
+    def tone(seconds: float, amplitude: int = 6000):
+        t = np.arange(int(seconds * 16000))
+        return (np.sin(t * 0.2) * amplitude).astype(np.int16)
+
+    def quiet_audio(seconds: float):
+        return np.zeros(int(seconds * 16000), dtype=np.int16)
+
+    # --- cutting audio into utterances
+    chunks: list = []
+    chunker = Chunker(lambda audio, at: chunks.append(audio))
+    chunker.feed(quiet_audio(3))
+    check("silence produces no utterance", not chunks)
+    chunker.feed(tone(1.5)); chunker.feed(quiet_audio(1.2))
+    chunker.feed(tone(1.0)); chunker.feed(quiet_audio(1.2))
+    check("speech is cut into utterances at pauses", len(chunks) == 2,
+          f"{len(chunks)} chunks")
+    chunks.clear()
+    chunker.feed(tone(45))
+    check("non-stop speech is still cut every 20 s", len(chunks) == 2,
+          f"{len(chunks)} chunks")
+    chunks.clear()
+    chunker = Chunker(lambda audio, at: chunks.append(audio))
+    chunker.feed(tone(2), muted=True); chunker.feed(quiet_audio(1.2))
+    check("echo gate: muted mic audio is not transcribed", not chunks)
+
+    # --- what may leave the Mac, and how
+    def url_ok(url: str) -> bool:
+        try:
+            brain_mod.validate_base_url(url)
+            return True
+        except brain_mod.BrainError:
+            return False
+
+    check("https endpoint accepted", url_ok("https://api.deepseek.com/v1"))
+    check("plain http endpoint refused", not url_ok("http://api.deepseek.com/v1"))
+    check("http allowed only to this Mac", url_ok("http://localhost:11434/v1")
+          and not url_ok("http://localhost.evil.com/v1"))
+    check("credentials inside the URL refused",
+          not url_ok("https://user:pass@api.example.com/v1"))
+    cleaned = brain_mod.clean_reply(
+        "<think>secret plan</think>**Say** this: [click](https://evil.example) "
+        "or http://evil.example/x\n- point two")
+    check("model output is reduced to plain text",
+          "evil" not in cleaned and "think" not in cleaned and "*" not in cleaned
+          and "• point two" in cleaned, cleaned)
+
+    secret = "sk-SMOKE-SECRET-42"
+    sent: list = []
+
+    class Reply:
+        def __init__(self, status, text="• ok"):
+            self.status_code, self._text = status, text
+
+        def json(self):
+            return {"choices": [{"message": {"content": self._text}}]}
+
+    def make_brain(replies):
+        def post(url, **kw):
+            sent.append((url, kw))
+            return replies.pop(0) if len(replies) > 1 else replies[0]
+        return brain_mod.Brain(
+            {"base_url": "https://api.example.com/v1", "model": "m",
+             "your_name": "Rohan"}, key_getter=lambda: secret, post=post)
+
+    for status, label in ((401, "a rejected key"), (302, "a redirect")):
+        try:
+            make_brain([Reply(status)]).what_to_say("", "Them: hi")
+            check(f"{label} is an error", False)
+        except brain_mod.BrainError as exc:
+            check(f"{label} is an error that does not reveal the key",
+                  secret not in str(exc), str(exc))
+    sent.clear()
+    extra_brain = make_brain([Reply(200)])
+    extra_brain._cfg["request_extra"] = {"thinking": {"type": "disabled"},
+                                         "model": "evil", "messages": []}
+    extra_brain.what_to_say("", "Them: hi")
+    body = sent[-1][1]["json"]
+    check("request_extra is sent but cannot replace the model or the messages",
+          body["thinking"] == {"type": "disabled"} and body["model"] == "m"
+          and len(body["messages"]) == 2)
+    try:
+        make_brain([Reply(200, "")]).what_to_say("", "Them: hi")
+        check("an empty reply is reported, not shown as blank", False)
+    except brain_mod.BrainError as exc:
+        check("an empty reply is reported, not shown as blank",
+              "thinking" in str(exc))
+    check("requests never follow redirects and carry the key only in the header",
+          all(kw["allow_redirects"] is False and secret not in str(kw["json"])
+              and url.startswith("https://api.example.com/v1/")
+              for url, kw in sent))
+    check("no key field exists in config.toml",
+          not re.search(r"(?im)^\s*(api_?key|token|secret)\s*=",
+                        config.CONFIG_PATH.read_text()))
+
+    # --- Keychain (a throwaway item, removed again)
+    service = "Dictate Meeting Mode (smoke test)"
+    try:
+        keychain.delete_key(service)
+        keychain.set_key("sk-one", service)
+        keychain.set_key("sk-two", service)
+        stored = keychain.get_key(service)
+        removed = keychain.delete_key(service)
+        check("API key round-trips through the Keychain",
+              stored == "sk-two" and removed and keychain.get_key(service) is None)
+    except keychain.KeychainError as exc:
+        check("API key round-trips through the Keychain", False, str(exc))
+
+    # a key saved for one provider must never be sent to another address
+    host_a, host_b = "smoke-a.example.com", "smoke-b.example.com"
+    try:
+        keychain.set_key("sk-for-a", account=host_a)
+        cfg_a = {"base_url": f"https://{host_a}/v1", "model": "m"}
+        cfg_b = {"base_url": f"https://{host_b}/v1", "model": "m"}
+        posted: list = []
+        swapped = brain_mod.Brain(cfg_b, post=lambda url, **kw: posted.append(url))
+        try:
+            swapped.what_to_say("", "Them: hi")
+        except brain_mod.BrainError:
+            pass
+        check("a key saved for one provider is not sent to a different address",
+              brain_mod.Brain(cfg_a).problem() is None
+              and "no API key" in (brain_mod.Brain(cfg_b).problem() or "")
+              and not posted)
+    finally:
+        keychain.delete_key(account=host_a)
+
+    # --- the panel
+    from AppKit import NSApplication
+    NSApplication.sharedApplication()
+    panel = Overlay()
+    panel._build()
+    check("panel is excluded from screen capture", panel._panel.sharingType() == 0)
+    panel._panel.close()
+
+    # --- a whole session
+    class FakeSystemAudio:
+        last = None
+
+        def __init__(self, on_audio):
+            self.on_audio, self.alive, self.starts = on_audio, False, 0
+            self.failure = "stopped"
+            FakeSystemAudio.last = self
+
+        def start(self):
+            self.alive, self.starts = True, self.starts + 1
+
+        def is_alive(self):
+            return self.alive
+
+        def stop(self):
+            self.alive = False
+
+    class FakeMic:
+        last = None
+
+        def __init__(self, callback):
+            self.callback, self.closed = callback, False
+            FakeMic.last = self
+
+        def start(self): pass
+        def abort(self): pass
+        def close(self): self.closed = True
+
+    class FakeOverlay:
+        def __init__(self): self.sections, self.visible = {}, False
+        def show(self): self.visible = True
+        def hide(self): self.visible = False
+        def render(self, sections): self.sections = dict(sections)
+
+    heard = iter(["The launch moved to March fifteenth.",
+                  "Rohan, where does the pricing page stand?",
+                  "It goes live on Monday."])
+    cfg = config.load()
+    cfg["meeting"] = dict(cfg["meeting"], your_name="Rohan", save_transcript=False)
+    sent.clear()
+    brain = make_brain([Reply(500), Reply(500),
+                        Reply(200, "Asked: pricing page status?\n• Live Monday.")])
+    overlay = FakeOverlay()
+    session = session_mod.MeetingSession(
+        cfg, "model", overlay, brain=brain,
+        system_audio_factory=FakeSystemAudio, mic_factory=FakeMic,
+        transcribe=lambda audio, *a: next(heard))
+    saved_dir = Path(tempfile.mkdtemp())
+    session_mod.SAVE_DIR = saved_dir / "meetings"
+
+    def wait(condition, seconds=5.0) -> bool:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if condition():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def them(seconds=1.5):
+        FakeSystemAudio.last.on_audio(
+            np.concatenate([tone(seconds), quiet_audio(1.2)]).tobytes())
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        session.start()
+        them()
+        wait(lambda: len(session.transcript) == 1)
+        statement_calls = len(sent)
+        session_mod.TURN_COOLDOWN_S = 0
+        them()  # the question: the provider fails twice (HTTP 500)
+        wait(lambda: "paused" in session.note)
+        note_after_failure = session.note
+        lines_after_failure = len(session.transcript)
+        session._last_turn_check = 0
+        session._think("turn")  # the provider is back
+        wait(lambda: session.say.startswith("Asked"))
+        time.sleep(session_mod.ECHO_GATE_S + 0.1)  # the others stop talking
+        FakeMic.last.callback(
+            np.concatenate([tone(1.5), quiet_audio(1.2)]).reshape(-1, 1))
+        wait(lambda: len(session.transcript) == 3)
+        text = session.transcript.render()
+        say = session.say
+        FakeSystemAudio.last.alive = False  # the helper dies
+        restarted = wait(lambda: FakeSystemAudio.last.starts == 2, 4)
+        shown = dict(overlay.sections)
+        session.stop()
+    log = out.getvalue()
+
+    check("a plain statement does not call the provider", statement_calls == 0)
+    check("a question with my name asks the provider for talking points",
+          say.startswith("Asked"), say)
+    check("a provider outage keeps the transcript running and says so",
+          "paused" in note_after_failure and lines_after_failure == 2,
+          note_after_failure)
+    check("speakers are labelled Them and You",
+          text.count("Them:") == 2 and text.count("You:") == 1, text)
+    check("a dead audio helper is restarted", restarted)
+
+    failing = FakeOverlay()
+    failing.failed = "macOS would not hide the panel"
+    blind = session_mod.MeetingSession(
+        cfg, "model", failing, brain=make_brain([Reply(200)]),
+        system_audio_factory=FakeSystemAudio, mic_factory=FakeMic,
+        transcribe=lambda audio, *a: "x")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        blind.start()
+        stopped_itself = wait(lambda: not blind.active, 4)
+        blind.stop()
+    check("if the panel cannot be hidden, Meeting Mode stops listening",
+          stopped_itself)
+    check("the panel shows the live transcript", "pricing" in shown.get("Live", ""))
+    check("stopping wipes the meeting from memory and hides the panel",
+          len(session.transcript) == 0 and not session.say
+          and not overlay.visible and FakeMic.last.closed
+          and session._them is None and session._jobs.empty())
+    check("nothing is saved to disk by default", not session_mod.SAVE_DIR.exists())
+    check("nothing said in the meeting, and no key, is logged",
+          not any(w in log for w in ("pricing", "March", "Monday", secret)), log)
+
+    # opt-in saving
+    cfg["meeting"]["save_transcript"] = True
+    session = session_mod.MeetingSession(
+        cfg, "model", FakeOverlay(), brain=make_brain([Reply(200)]),
+        system_audio_factory=FakeSystemAudio, mic_factory=FakeMic,
+        transcribe=lambda audio, *a: "Saved line.")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        session.start()
+        them()
+        wait(lambda: len(session.transcript) == 1)
+        session.stop()
+    files = list(session_mod.SAVE_DIR.glob("meeting-*.txt"))
+    mode = stat.S_IMODE(os.stat(files[0]).st_mode) if files else 0
+    dir_mode = stat.S_IMODE(os.stat(session_mod.SAVE_DIR).st_mode) if files else 0
+    check("an opted-in transcript is saved readable by this account only",
+          len(files) == 1 and mode == 0o600 and dir_mode == 0o700,
+          f"{oct(mode)} in {oct(dir_mode)}")
+    for f in files:
+        f.unlink()
 
 
 def _summary() -> int:

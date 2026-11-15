@@ -17,6 +17,14 @@ DEFAULTS = {
                 "language": "en"},
     "ollama": {"model": "qwen2.5:3b", "fallback_model": "llama3.2:3b"},
     "vocabulary": {},
+    # No API key here, ever: it lives in the macOS Keychain.
+    "meeting": {"enabled": False,
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-flash",
+                "request_extra": {"thinking": {"type": "disabled"}},
+                "your_name": "",
+                "summary_minutes": 3, "suggest_hotkey": "right_option",
+                "headphones": False, "save_transcript": False},
 }
 
 

@@ -22,6 +22,7 @@ def append(raw: str, text: str, stage: str, latency_ms: dict[str, float]) -> Non
     try:
         with _lock, open(HISTORY_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
+        HISTORY_PATH.chmod(0o600)  # dictated text: this account only
     except OSError as exc:
         print(f"[dictate] could not write history: {exc}", file=sys.stderr)
 
@@ -30,6 +31,10 @@ def last(n: int = 20) -> list[dict]:
     """Most recent n entries, newest first."""
     if not HISTORY_PATH.exists():
         return []
+    try:
+        HISTORY_PATH.chmod(0o600)  # dictated text: this account only
+    except OSError:
+        pass
     entries = []
     with _lock, open(HISTORY_PATH) as f:
         for line in f:

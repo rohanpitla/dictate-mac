@@ -245,7 +245,7 @@ def _clean_one(raw: str, cfg: dict, style_hint: str | None) -> tuple[str, str]:
         if passes_guardrails(raw, cleaned):
             return cleaned, "llm"
         print(f"[dictate] cleanup output failed guardrails, using raw "
-              f"transcript (got {cleaned[:60]!r})", file=sys.stderr)
+              f"transcript ({len(cleaned)} chars rejected)", file=sys.stderr)
         return raw, "guardrail"
     return raw, "raw"
 
