@@ -7,6 +7,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.toml"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config.local.toml"
 
 DEFAULTS = {
     "general": {"hotkey": "right_option", "debug": True,
@@ -30,8 +31,12 @@ DEFAULTS = {
 
 def load() -> dict:
     cfg = {k: dict(v) for k, v in DEFAULTS.items()}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "rb") as f:
+    # config.local.toml is not in git: settings there apply to this Mac only
+    # and win over config.toml (e.g. switching on an experimental feature).
+    for path in (CONFIG_PATH, LOCAL_CONFIG_PATH):
+        if not path.exists():
+            continue
+        with open(path, "rb") as f:
             user = tomllib.load(f)
         for section, values in user.items():
             if isinstance(values, dict):

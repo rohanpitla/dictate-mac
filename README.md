@@ -105,13 +105,16 @@ beyond the menu bar.
 
 A private live assistant for calls (Google Meet, Zoom, Teams, anything your
 Mac plays). It has passed its automated tests but has not been used in real
-calls yet. To try it, set `enabled = true` under `[meeting]` in `config.toml`,
-restart Dictate, then menu bar > **Start Meeting Mode…**
+calls yet. To try it, create `config.local.toml` next to `config.toml` containing
+`[meeting]` and `enabled = true` (that file stays on your Mac), restart Dictate, then menu bar > **Start Meeting Mode…**
 
 - **Live transcript** of you ("You") and everyone else ("Them"). No bot joins the call.
 - **Catch-up** every few minutes: what was decided, what is open, what was asked of you.
-- **Talking points** when someone asks you a question or says your name, or
-  on demand by tapping Right Option.
+- **What to say** when someone asks you a question or says your name, or on
+  demand by tapping Right Option: the question, one line of context, and two
+  or three sentences you can read aloud.
+- **A connection test at start**: a wrong key or model name shows in the
+  panel within seconds, not at the first question.
 - **A panel only you can see**: it is excluded from screen sharing,
   screenshots and recordings. The menu bar icon does not change, so nothing
   in a shared screen shows that Meeting Mode is on; the panel is your sign

@@ -6,3 +6,4 @@ history.jsonl
 helper/sysaudio
 meeting_notes.md
 helper/micaudio
+config.local.toml

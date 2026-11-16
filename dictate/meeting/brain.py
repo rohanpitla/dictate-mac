@@ -121,29 +121,42 @@ class Brain:
         return self._ask(self._context(summary, new_transcript, notes), task, 220)
 
     def your_turn(self, summary: str, transcript: str, notes: str = "") -> str | None:
-        """Talking points if someone just asked the user something, else None."""
+        """What to say if someone just asked the user something, else None."""
         task = (
             f"Look at the last 'Them' lines. If they ask {self._name} (or the "
             f"whole group) a question or for an update that {self._name} "
-            "should answer now, reply in this form:\n"
+            "should answer now, reply in exactly this form:\n"
             "Asked: <the question in 12 words or fewer>\n"
-            "• <what to say, first person, under 16 words>\n"
-            "• <second point>\n"
-            "• <optional third point>\n"
+            "Context: <what led to it, one line under 20 words>\n"
+            f"Say: <the answer {self._name} can read aloud word for word: 2 "
+            "or 3 natural spoken sentences, first person, under 60 words>\n"
+            "If the transcript and notes do not contain a fact the answer "
+            "needs, say so honestly in the answer instead of guessing.\n"
             f"If nothing needs {self._name}'s answer right now, reply with "
             "exactly: NONE")
-        reply = self._ask(self._context(summary, transcript, notes), task, 220)
+        reply = self._ask(self._context(summary, transcript, notes), task, 260)
         if not reply or reply.strip().upper().startswith("NONE"):
             return None
         return reply
 
     def what_to_say(self, summary: str, transcript: str, notes: str = "") -> str:
         task = (
-            f"{self._name} wants to speak next. Give 2 or 3 things to say "
-            "that move this conversation forward, each on its own line "
-            "starting with '• ', first person, under 16 words. If a question "
-            f"to {self._name} is still unanswered, answer that first.")
-        return self._ask(self._context(summary, transcript, notes), task, 220)
+            f"{self._name} wants to speak next. Reply in exactly this form:\n"
+            "Context: <where the conversation is right now, one line under "
+            "20 words>\n"
+            f"Say: <what {self._name} can read aloud word for word to move "
+            "this conversation forward: 2 or 3 natural spoken sentences, "
+            "first person, under 60 words>\n"
+            f"If a question to {self._name} is still unanswered, answer that "
+            "first. Never guess a fact that is not in the transcript or notes.")
+        return self._ask(self._context(summary, transcript, notes), task, 260)
+
+    def check(self) -> None:
+        """Send one tiny request with no meeting content, so a wrong key,
+        model name or address shows up when the meeting starts and not at
+        the first question. Raises BrainError."""
+        self._ask("<transcript>\n(nothing yet)\n</transcript>",
+                  "Reply with the single word: OK", 8)
 
     # ------------------------------------------------------------ network --
     def _ask(self, context: str, task: str, max_tokens: int) -> str:

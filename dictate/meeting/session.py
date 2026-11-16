@@ -86,6 +86,7 @@ class MeetingSession:
             self._dropped = 0
             self._notes = self._read_notes()
             self._brain_problem = self._brain.problem()
+            self._brain_ready = False
             name = (self._cfg.get("your_name") or "").strip()
             self._name_re = (re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
                              if name else None)
@@ -127,6 +128,7 @@ class MeetingSession:
             threading.Thread(target=target, args=(run,), daemon=True,
                              name=name_).start()
         self._overlay.show()
+        self._think("check")  # proves the key and model work before they are needed
         self._render()
         print("[meeting] started"
               + ("" if not self._brain_problem
@@ -225,7 +227,10 @@ class MeetingSession:
                 continue
             try:
                 recent = self.transcript.render(max_chars=3000)
-                if kind == "catchup":
+                if kind == "check":
+                    self._brain.check()
+                    self._brain_ready = True
+                elif kind == "catchup":
                     count = len(self.transcript)
                     new = self.transcript.render(start=self._summarized)
                     if not new.strip():
@@ -308,6 +313,10 @@ class MeetingSession:
         status = f"Listening {elapsed // 60}:{elapsed % 60:02d} · hidden from screen share"
         if self._brain_problem:
             status += f"\nTranscript only — {self._brain_problem}"
+        elif self._brain_ready:
+            status += "\nSuggestions on"
+        elif not self.note:
+            status += "\nChecking the suggestion service…"
         if self._dropped:
             status += f"\nSkipped {self._dropped} utterances to stay live"
         if self.note:

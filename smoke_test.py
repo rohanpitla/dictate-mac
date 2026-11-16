@@ -759,8 +759,10 @@ def _meeting_checks() -> None:
     cfg = config.load()
     cfg["meeting"] = dict(cfg["meeting"], your_name="Rohan", save_transcript=False)
     sent.clear()
-    brain = make_brain([Reply(500), Reply(500),
-                        Reply(200, "Asked: pricing page status?\n• Live Monday.")])
+    brain = make_brain([Reply(200, "OK"), Reply(500), Reply(500),
+                        Reply(200, "Asked: pricing page status?\n"
+                                   "Context: Launch moved to March.\n"
+                                   "Say: It goes live on Monday.")])
     overlay = FakeOverlay()
     session = session_mod.MeetingSession(
         cfg, "model", overlay, brain=brain,
@@ -784,9 +786,14 @@ def _meeting_checks() -> None:
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
         session.start()
+        checked = wait(lambda: session._brain_ready)
+        check_calls = len(sent)
+        check_body = str(sent[0][1]["json"]) if sent else ""
+        ready_shown = wait(lambda: "Suggestions on" in
+                           dict(overlay.sections).get("Meeting mode", ""))
         them()
         wait(lambda: len(session.transcript) == 1)
-        statement_calls = len(sent)
+        statement_calls = len(sent) - check_calls
         session_mod.TURN_COOLDOWN_S = 0
         them()  # the question: the provider fails twice (HTTP 500)
         wait(lambda: "paused" in session.note)
@@ -807,6 +814,8 @@ def _meeting_checks() -> None:
         session.stop()
     log = out.getvalue()
 
+    check("starting a meeting tests the key and model once, and says so",
+          checked and check_calls == 1 and ready_shown)
     check("a plain statement does not call the provider", statement_calls == 0)
     check("a question with my name asks the provider for talking points",
           say.startswith("Asked"), say)
@@ -829,6 +838,15 @@ def _meeting_checks() -> None:
         blind.stop()
     check("if the panel cannot be hidden, Meeting Mode stops listening",
           stopped_itself)
+    bad_key = session_mod.MeetingSession(
+        cfg, "model", FakeOverlay(), brain=make_brain([Reply(401)]),
+        system_audio_factory=FakeSystemAudio, mic_factory=FakeMic,
+        transcribe=lambda audio, *a: "x")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        bad_key.start()
+        warned = wait(lambda: "rejected the API key" in bad_key.note)
+        bad_key.stop()
+    check("a wrong key is reported as soon as the meeting starts", warned)
     check("the panel shows the live transcript", "pricing" in shown.get("Live", ""))
     check("stopping wipes the meeting from memory and hides the panel",
           len(session.transcript) == 0 and not session.say
