@@ -1,0 +1,90 @@
+# Tests Dictate for Windows on real Windows machines (standard and ARM).
+#
+# Installs it exactly as a user would (windows/install.ps1, Windows
+# PowerShell 5.1), runs the self-test against the installed copy, starts the
+# real app, then uninstalls it and checks nothing is left behind.
+
+name: Windows
+
+on:
+  push:
+    branches: [windows, main]
+    paths: ["dictate/**", "dictate_win/**", "windows/**", "requirements-windows*", ".github/workflows/windows.yml"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read   # least privilege: this workflow only reads the code
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: powershell   # Windows PowerShell 5.1, what testers have
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Machine
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "Windows $($os.Version) $($os.OSArchitecture), CPU: $((Get-CimInstance Win32_Processor).Name)"
+          "PowerShell $($PSVersionTable.PSVersion)"
+          try { "Defender real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)" } catch { "Defender: unknown" }
+
+      - name: Install (as a user would, plus the optional local engine)
+        run: .\windows\install.ps1 -Source $PWD -WithLocal -NoLaunch -NoStartAtLogin
+
+      - name: Self-test (installed copy)
+        run: |
+          $base = Join-Path $env:LOCALAPPDATA "Dictate"
+          Push-Location (Join-Path $base "app")
+          & (Join-Path $base "venv\Scripts\python.exe") -m dictate_win.selftest 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\selftest.txt"
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: Start the real app
+        run: |
+          $base = Join-Path $env:LOCALAPPDATA "Dictate"
+          $link = Join-Path ([Environment]::GetFolderPath("Programs")) "Dictate.lnk"
+          if (-not (Test-Path $link)) { throw "Start menu shortcut missing" }
+          Start-Process -FilePath (Join-Path $base "venv\Scripts\pythonw.exe") -ArgumentList "-m dictate_win" -WorkingDirectory (Join-Path $base "app")
+          Start-Sleep -Seconds 20
+          $log = Get-Content (Join-Path $base "logs\dictate.log") -Raw
+          $log
+          $running = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*-m dictate_win*" -and $_.CommandLine -notlike "*selftest*" }
+          if (-not $running) { throw "Dictate is not running" }
+          if ($log -notmatch "\[dictate\] ready") { throw "Dictate did not report ready" }
+          if ($log -match "Traceback") { throw "Dictate logged an error" }
+          "Memory (MB): " + [math]::Round((($running | ForEach-Object { (Get-Process -Id $_.ProcessId).WorkingSet64 }) | Measure-Object -Sum).Sum / 1MB)
+          $micChildren = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*mic_child*" }
+          "Microphone processes waiting (mic off): $(@($micChildren).Count)"
+
+      - name: Uninstall and check nothing is left
+        run: |
+          .\windows\uninstall.ps1 -Purge
+          $base = Join-Path $env:LOCALAPPDATA "Dictate"
+          if (Test-Path $base) { throw "the Dictate folder is still there" }
+          foreach ($folder in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Startup"))) {
+            if (Test-Path (Join-Path $folder "Dictate.lnk")) { throw "a shortcut is still there" }
+          }
+          $left = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*dictate_win*" }
+          if ($left) { throw "Dictate processes are still running" }
+          if ((cmdkey /list) -match "Dictate/") { throw "a saved key is still there" }
+          "Clean."
+
+      - name: Keep the test output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: selftest-${{ matrix.os }}
+          path: ${{ runner.temp }}/selftest.txt
+          if-no-files-found: ignore
