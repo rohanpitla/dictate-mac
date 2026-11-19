@@ -65,8 +65,9 @@ model = "deepseek-flash"
 # "thinking" mode, which is on by default and makes replies slow. Other
 # providers use different switches (or none): set  request_extra = {}  for them.
 request_extra = { thinking = { type = "disabled" } }
-# Your first name: the assistant speaks up when someone says it
-your_name = "Rohan"
+# Your first name: the assistant speaks up when someone says it.
+# Best set in config.local.toml so it stays on your Mac.
+your_name = ""
 # Minutes between catch-up summaries
 summary_minutes = 3
 # Tap this key for "what should I say now?" (must differ from the dictation hotkey)

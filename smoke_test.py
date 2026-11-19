@@ -506,7 +506,108 @@ def main() -> int:
 
     _mic_helper_checks()
     _meeting_checks()
+    _app_checks()
     return _summary()
+
+
+def _app_checks() -> None:
+    """The app's own wiring: hotkey taps and menu clicks -> start / stop.
+    Uses a fake recorder; no microphone, sound, muting or model is touched."""
+    import contextlib
+    import io
+
+    from dictate import app as app_mod
+    from dictate import config
+    from dictate.recorder import MicrophoneError
+
+    print("\n== 10. App controls (hotkey and menu) ==")
+    folder = Path(tempfile.mkdtemp())
+
+    class FakeRecorder:
+        def __init__(self):
+            self.stalled, self.elapsed, self.fail, self.n = False, 0.0, False, 0
+
+        def start(self):
+            if self.fail:
+                raise MicrophoneError("no response after 5s")
+
+        def stop(self):
+            self.n += 1
+            path = folder / f"rec{self.n}.wav"
+            path.write_bytes(b"x")
+            return path
+
+    originals = (app_mod.AppHelper.callAfter, app_mod.sounds.play,
+                 app_mod.transcriber.preload, app_mod.cleanup.preload,
+                 app_mod.appdetect.frontmost_bundle_id, app_mod.recorder.duration_s)
+    app_mod.AppHelper.callAfter = lambda fn, *a: fn(*a)
+    app_mod.sounds.play = lambda *_: None
+    app_mod.transcriber.preload = lambda *_: None
+    app_mod.cleanup.preload = lambda *_: None
+    app_mod.appdetect.frontmost_bundle_id = lambda: "com.example"
+    app_mod.recorder.duration_s = lambda _path: 1.0
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            app = app_mod.DictateApp(config.load())
+            app._muter = None
+            app._recorder = rec = FakeRecorder()
+
+            def stop_enabled() -> bool:
+                return app._stop_item._menuitem.action() is not None
+
+            idle_grey = not stop_enabled()
+            app._handle_event("stop")
+            stop_when_idle = not app._recording and app._jobs.empty()
+
+            app._handle_event("toggle")
+            started = app._recording and app.title == app_mod.ICON_RECORDING
+            stop_live = stop_enabled()
+            app._on_stop_dictation(None)             # the menu click
+            app._handle_event(app._events.get_nowait())
+            menu_stopped = (not app._recording and app._jobs.qsize() == 1
+                            and not stop_enabled())
+
+            app._handle_event("toggle")
+            app._handle_event("toggle")              # second tap stops
+            tap_stopped = not app._recording and app._jobs.qsize() == 2
+
+            app._handle_event("toggle")
+            app._on_toggle_enabled(app._enabled_item)  # switch off mid-recording
+            app._handle_event(app._events.get_nowait())
+            discarded = (not app._recording and app._jobs.qsize() == 2
+                         and not (folder / f"rec{rec.n}.wav").exists())
+            app._handle_event("toggle")
+            ignored_while_off = not app._recording
+            app._on_toggle_enabled(app._enabled_item)
+
+            app._handle_event("toggle")
+            rec.stalled = True
+            app._handle_event("tick")
+            stall_stopped = not app._recording and app._jobs.qsize() == 3
+            rec.stalled = False
+
+            rec.fail = True
+            app._handle_event("toggle")
+            mic_error = not app._recording and not stop_enabled()
+    finally:
+        (app_mod.AppHelper.callAfter, app_mod.sounds.play,
+         app_mod.transcriber.preload, app_mod.cleanup.preload,
+         app_mod.appdetect.frontmost_bundle_id,
+         app_mod.recorder.duration_s) = originals
+
+    check("'Stop Dictation' is greyed out when nothing is recording",
+          idle_grey and stop_when_idle)
+    check("a tap starts recording and enables 'Stop Dictation'",
+          started and stop_live)
+    check("the menu's 'Stop Dictation' stops and queues the recording",
+          menu_stopped)
+    check("a second tap stops the recording", tap_stopped)
+    check("switching Dictate off mid-recording discards it; taps are then ignored",
+          discarded and ignored_while_off)
+    check("a stalled microphone stops the recording and keeps the audio",
+          stall_stopped)
+    check("a microphone error leaves the app idle, not stuck recording", mic_error)
 
 
 def _mic_helper_checks() -> None:
@@ -655,6 +756,12 @@ def _meeting_checks() -> None:
         except brain_mod.BrainError as exc:
             check(f"{label} is an error that does not reveal the key",
                   secret not in str(exc), str(exc))
+    try:
+        make_brain([Reply(402)]).check()
+        check("an account with no credit is reported in plain words", False)
+    except brain_mod.BrainError as exc:
+        check("an account with no credit is reported in plain words",
+              "no credit" in str(exc), str(exc))
     sent.clear()
     extra_brain = make_brain([Reply(200)])
     extra_brain._cfg["request_extra"] = {"thinking": {"type": "disabled"},
@@ -847,6 +954,19 @@ def _meeting_checks() -> None:
         warned = wait(lambda: "rejected the API key" in bad_key.note)
         bad_key.stop()
     check("a wrong key is reported as soon as the meeting starts", warned)
+    dictating = session_mod.MeetingSession(
+        cfg, "model", FakeOverlay(), brain=make_brain([Reply(200)]),
+        system_audio_factory=FakeSystemAudio, mic_factory=FakeMic,
+        transcribe=lambda audio, *a: "Dictated words.", mic_paused=lambda: True)
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        dictating.start()
+        FakeMic.last.callback(
+            np.concatenate([tone(1.5), quiet_audio(1.2)]).reshape(-1, 1))
+        time.sleep(0.8)
+        leaked = len(dictating.transcript)
+        dictating.stop()
+    check("words dictated during a meeting stay out of the meeting transcript",
+          leaked == 0)
     check("the panel shows the live transcript", "pricing" in shown.get("Live", ""))
     check("stopping wipes the meeting from memory and hides the panel",
           len(session.transcript) == 0 and not session.say

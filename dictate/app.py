@@ -16,6 +16,7 @@ from dictate import (__version__, appdetect, cleanup, history, latency, layout,
 from dictate import config as config_mod
 from dictate.ducking import OutputMuter
 from dictate.hotkey import HOTKEY_LABELS, HotkeyListener
+from dictate import dialogs
 from dictate.meeting import keychain
 from dictate.meeting.brain import Brain, BrainError, brain_host
 from dictate.meeting.overlay import Overlay
@@ -25,6 +26,9 @@ from dictate.recorder import MicrophoneError, Recorder
 ICON_IDLE = "🎤"
 ICON_RECORDING = "🔴"
 ICON_BUSY = "⏳"
+
+_alert = dialogs.alert  # rumps.alert opens behind other windows
+
 
 MEETING_START_TEXT = """While Meeting Mode is on, Dictate listens to your microphone and to everything your Mac plays, and shows a live transcript in a panel that is hidden from screen sharing.
 
@@ -122,6 +126,10 @@ class DictateApp(rumps.App):
         self._meeting_item = rumps.MenuItem("Start Meeting Mode…",
                                             callback=self._on_toggle_meeting)
 
+        # Greyed out unless a dictation is being recorded, so it is never
+        # mistaken for the way to stop Meeting Mode.
+        self._stop_item = rumps.MenuItem("Stop Dictation")
+
         # Meeting Mode is experimental and off unless enabled in config.toml.
         meeting_items = []
         if self._config.get("meeting", {}).get("enabled", False):
@@ -136,8 +144,7 @@ class DictateApp(rumps.App):
             self._info_item,
             None,
             *meeting_items,
-            rumps.MenuItem("Stop Recording",
-                           callback=lambda _: self._events.put("stop")),
+            self._stop_item,
             rumps.MenuItem("Re-transcribe Last Recording",
                            callback=self._on_retranscribe_last),
             None,
@@ -167,7 +174,7 @@ class DictateApp(rumps.App):
         try:
             self._config["meeting"] = config_mod.load()["meeting"]
         except Exception as exc:
-            rumps.alert(title="Meeting Mode",
+            _alert(title="Meeting Mode",
                         message=f"config.toml could not be read: {exc}")
             return
         problem = Brain(self._config["meeting"]).problem()
@@ -178,7 +185,7 @@ class DictateApp(rumps.App):
                            f"{brain_host(self._config['meeting']['base_url'])} "
                            f"(model {self._config['meeting']['model']}).")
         # Starting is always a deliberate, confirmed act — never automatic.
-        if rumps.alert(title="Start Meeting Mode?",
+        if _alert(title="Start Meeting Mode?",
                        message=f"{MEETING_START_TEXT}\n\n{destination}",
                        ok="Start Listening", cancel="Cancel") != 1:
             return
@@ -197,6 +204,9 @@ class DictateApp(rumps.App):
 
         session = MeetingSession(self._config, self._model, self._overlay,
                                  on_stopped=self._on_meeting_stopped,
+                                 # words dictated into another app are not
+                                 # part of the meeting
+                                 mic_paused=lambda: self._recording,
                                  hotkey_factory=hotkey_factory)
         self._meeting = session  # set first, so "stop" works from the first moment
         try:
@@ -208,7 +218,7 @@ class DictateApp(rumps.App):
             print(f"[meeting] could not start: {message}", file=sys.stderr)
             AppHelper.callAfter(self._meeting_ui, False)
             AppHelper.callAfter(
-                lambda: rumps.alert(title="Meeting Mode could not start",
+                lambda: _alert(title="Meeting Mode could not start",
                                     message=message))
             return
         self._meeting_starting = False
@@ -219,47 +229,50 @@ class DictateApp(rumps.App):
         if reason:  # it stopped by itself: say why
             print(f"[meeting] stopped by itself: {reason}", file=sys.stderr)
             AppHelper.callAfter(
-                lambda: rumps.alert(title="Meeting Mode stopped", message=reason))
+                lambda: _alert(title="Meeting Mode stopped", message=reason))
 
     def _meeting_ui(self, active: bool) -> None:
         # Only the menu item changes. The menu bar icon stays the same on
         # purpose: the menu bar is visible in a full-screen share, and the
         # hidden panel is what tells you Meeting Mode is listening.
-        self._meeting_item.title = ("Stop Meeting Mode" if active
+        self._meeting_item.title = ("Stop Meeting Mode (listening now)" if active
                                     else "Start Meeting Mode…")
 
     def _on_set_meeting_key(self, _item) -> None:
         try:
             host = brain_host(config_mod.load()["meeting"]["base_url"])
         except (BrainError, Exception) as exc:
-            rumps.alert(title="Meeting API Key",
+            _alert(title="Meeting API Key",
                         message=f"Fix meeting.base_url in config.toml first: {exc}")
             return
         try:
             saved = keychain.get_key(account=host) is not None
         except keychain.KeychainError:
             saved = False
-        response = rumps.Window(
-            title=f"API Key for {host}",
-            message=(f"Paste your API key for {host}. It is stored in your "
-                     "macOS Keychain, not in any file, and is only ever sent "
-                     "to that address.\n"
-                     + ("A key is already saved. Leave this empty and click "
-                        "Save to remove it." if saved else "No key is saved yet.")),
-            ok="Save", cancel="Cancel", dimensions=(320, 24),
-            secure=True).run()
-        if response.clicked != 1:
+        text = dialogs.ask_secret(
+            f"API Key for {host}",
+            f"Paste your API key for {host}. It is stored in your macOS "
+            "Keychain, not in any file, and is only ever sent to that "
+            "address.\n"
+            + ("A key is already saved. Leave this empty and click Save to "
+               "remove it." if saved else "No key is saved yet."))
+        if text is None:
             return
-        key = response.text.strip()
+        key = text.strip()
+        if key and (len(key) < 8 or any(c.isspace() for c in key)):
+            _alert(title="Meeting API Key",
+                   message="That does not look like an API key (it has "
+                           "spaces or is very short). Nothing was changed.")
+            return
         try:
             if key:
                 keychain.set_key(key, account=host)
-                rumps.alert(title="Meeting API Key", message="Saved to your Keychain.")
+                _alert(title="Meeting API Key", message="Saved to your Keychain.")
             elif saved:
                 keychain.delete_key(account=host)
-                rumps.alert(title="Meeting API Key", message="Removed from your Keychain.")
+                _alert(title="Meeting API Key", message="Removed from your Keychain.")
         except (keychain.KeychainError, ValueError) as exc:
-            rumps.alert(title="Meeting API Key", message=f"Not saved: {exc}")
+            _alert(title="Meeting API Key", message=f"Not saved: {exc}")
 
     def _on_toggle_raw_mode(self, item) -> None:
         self._raw_mode = not self._raw_mode
@@ -269,7 +282,7 @@ class DictateApp(rumps.App):
     def _on_latency_stats(self, _item) -> None:
         report = latency.format_stats()
         print(f"[dictate]\n{report}")
-        rumps.alert(title="Dictate Latency (p50 / p95)", message=report)
+        _alert(title="Dictate Latency (p50 / p95)", message=report)
 
     def _update_info_item(self) -> None:
         label = HOTKEY_LABELS[self._hotkey_name]
@@ -292,7 +305,7 @@ class DictateApp(rumps.App):
             if self._recording:
                 saved = saved[:-1]  # the newest file is still being written
         if not saved:
-            rumps.alert(title="Dictate", message="No saved recordings yet.")
+            _alert(title="Dictate", message="No saved recordings yet.")
             return
         self._enqueue(saved[-1], 0.0, None, recovered=True)
 
@@ -351,7 +364,7 @@ class DictateApp(rumps.App):
         subprocess.Popen(["open", str(config_mod.CONFIG_PATH)])
 
     def _on_launch_at_login(self, _item) -> None:
-        rumps.alert(title="Launch Dictate at Login",
+        _alert(title="Launch Dictate at Login",
                     message=LAUNCH_AT_LOGIN_TEXT)
 
     def start_background_services(self) -> None:
@@ -407,7 +420,15 @@ class DictateApp(rumps.App):
                 icon = ICON_BUSY
             else:
                 icon = ICON_IDLE
-        AppHelper.callAfter(lambda: setattr(self, "title", icon))
+        stop = self._on_stop_dictation if icon == ICON_RECORDING else None
+
+        def apply() -> None:
+            self.title = icon
+            self._stop_item.set_callback(stop)
+        AppHelper.callAfter(apply)
+
+    def _on_stop_dictation(self, _item) -> None:
+        self._events.put("stop")
 
     # ------------------------------------------------------- controller --
     def _controller(self) -> None:

@@ -46,7 +46,8 @@ class MeetingSession:
                  brain: Brain | None = None, system_audio_factory=SystemAudio,
                  mic_factory=recorder._default_stream,
                  transcribe=transcriber.transcribe_samples,
-                 on_stopped=None, hotkey_factory=None) -> None:
+                 on_stopped=None, hotkey_factory=None,
+                 mic_paused=None) -> None:
         self._config = config
         self._cfg = config.get("meeting", {})
         self._model = model
@@ -57,6 +58,7 @@ class MeetingSession:
         self._transcribe = transcribe
         self._on_stopped = on_stopped
         self._hotkey_factory = hotkey_factory
+        self._mic_paused = mic_paused or (lambda: False)
         self._lock = threading.Lock()
         self._run: object | None = None  # identity of the live session
         self.transcript = Transcript()
@@ -164,7 +166,8 @@ class MeetingSession:
             return
         echo = (not self._headphones
                 and time.monotonic() - them.last_loud_at < ECHO_GATE_S)
-        you.feed(np.array(indata, dtype=np.int16).reshape(-1), muted=echo)
+        you.feed(np.array(indata, dtype=np.int16).reshape(-1),
+                 muted=echo or self._mic_paused())
 
     def _queue(self, speaker: str, audio, at: float, run: object) -> None:
         if run is not self._run:
@@ -229,7 +232,6 @@ class MeetingSession:
                 recent = self.transcript.render(max_chars=3000)
                 if kind == "check":
                     self._brain.check()
-                    self._brain_ready = True
                 elif kind == "catchup":
                     count = len(self.transcript)
                     new = self.transcript.render(start=self._summarized)
@@ -249,6 +251,7 @@ class MeetingSession:
                     if run is self._run:
                         self.say = result
                 self.note = ""
+                self._brain_ready = True  # any answer proves the service works
             except BrainError as exc:
                 log_failure(kind, exc)
                 self.note = f"Suggestions paused: {exc}"

@@ -195,6 +195,9 @@ class Brain:
             status = response.status_code
             if status in (401, 403):
                 raise BrainError("the provider rejected the API key")
+            if status == 402:
+                raise BrainError("your account with the provider has no "
+                                 "credit — add credit on their website")
             if 300 <= status < 400:
                 raise BrainError("the provider redirected the request — "
                                  "check meeting.base_url")
