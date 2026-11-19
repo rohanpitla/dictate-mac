@@ -65,6 +65,7 @@ jobs:
           if ($log -notmatch "\[dictate\] ready") { throw "Dictate did not report ready" }
           if ($log -match "Traceback") { throw "Dictate logged an error" }
           "Memory (MB): " + [math]::Round((($running | ForEach-Object { (Get-Process -Id $_.ProcessId).WorkingSet64 }) | Measure-Object -Sum).Sum / 1MB)
+          "Disk used (MB): " + [math]::Round(((Get-ChildItem $base -Recurse -File -Force | Measure-Object Length -Sum).Sum) / 1MB)
           $micChildren = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*mic_child*" }
           "Microphone processes waiting (mic off): $(@($micChildren).Count)"
 
