@@ -254,9 +254,29 @@ def main() -> int:
     long_text = " ".join(
         f"This is sentence number {i} about the project and what we should "
         f"do with it next week." for i in range(8))
-    laid = layout.format_layout(long_text)
+    laid = layout.format_layout(long_text, "paragraphs")
     check("layout: long text is split into paragraphs, words unchanged",
           "\n\n" in laid and " ".join(laid.split()) == long_text)
+    spoken_asks = (
+        "Okay, let's start with this. I want to make a demo video on how to "
+        "install it and then upload it to my LinkedIn. I also want to give it "
+        "to a few friends of mine. How much memory does this take? Because "
+        "some people have old laptops. You know? And will it work on Windows "
+        "laptops too, or only on a MacBook? I feel like Windows would be a "
+        "better thing to work on right now so I can get feedback.")
+    pointed = layout.format_layout(spoken_asks)
+    bullets = [l for l in pointed.splitlines() if l.startswith("• ")]
+    check("layout: a long dictation becomes bullet points, words unchanged",
+          pointed.startswith("Okay, let's start with this.\n• ")
+          and len(bullets) >= 3
+          and " ".join(pointed.replace("• ", "").split()) == spoken_asks,
+          pointed)
+    check("layout: 'You know?' and back-to-back questions never stand alone",
+          all(len(b.split()) >= 6 for b in bullets), pointed)
+    chat_short = ("Hey, are you free tomorrow? I wanted to show you the app "
+                  "I built. It takes a minute.")
+    check("layout: a short chat message stays one message",
+          layout.format_layout(chat_short, chat=True) == chat_short)
     check("layout: short text and stray ordinals left alone",
           layout.format_layout("Let's meet at 4 pm.") == "Let's meet at 4 pm."
           and "\n" not in layout.format_layout(
@@ -500,7 +520,7 @@ def main() -> int:
         "that model and make sure everything is right. What happened to the "
         "feature that we talked about, the one in the meetings? Is that "
         "possible? First we need to perfect the speaking feature and then we "
-        "can work on the meetings feature.")
+        "can work on the meetings feature.", "paragraphs")
     check("a follow-up question stays with the sentence it refers to",
           "meetings? Is that possible?\n\nFirst we need" in follow_up, follow_up)
 

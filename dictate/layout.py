@@ -1,5 +1,6 @@
-"""Lay dictated text out the way a person would type it: short paragraphs,
-and a numbered list when the speaker counted things off ("first… second…").
+"""Lay dictated text out the way a person would type it: bullet points (or
+short paragraphs) for long dictations, and a numbered list when the speaker
+counted things off ("first… second…").
 
 Done with plain rules, not the LLM: the 3B cleanup model ignored layout
 instructions on 71 of 74 real dictations and reworded more when asked to
@@ -54,6 +55,16 @@ _POINTS_BACK = re.compile(
     r"^(?:(?:is|was|does|did|would|could|can|will|isn't|doesn't|wouldn't)\s+)?"
     r"(?:that|this|it|those|these|they)\b", re.IGNORECASE)
 _SHORT_FOLLOW_UP_WORDS = 4
+
+# Bullet points: a long dictation is usually several separate asks.
+POINTS_MIN_WORDS = 60      # shorter dictations stay one paragraph
+POINT_MAX_WORDS = 32       # past this, a point ends at the next sentence
+POINT_MIN_WORDS = 10       # don't end a point for a new topic before this
+_DEPENDENT = re.compile(r"^(?:so that|because|which|that's why)\b", re.IGNORECASE)
+BULLET = "• "              # looks the same in every app, unlike "-" or "*"
+_GREETING = re.compile(
+    r"^(?:hey|hi|hello|dear|yo|good (?:morning|afternoon|evening))\b",
+    re.IGNORECASE)
 
 
 
@@ -154,8 +165,78 @@ def _paragraphs(sentences: list[str]) -> list[str]:
     return [" ".join(group) for group in groups]
 
 
-def format_layout(text: str) -> str:
-    """Add paragraph breaks and numbered lists. Wording is unchanged."""
+def _intro(sentences: list[str]) -> int:
+    """How many opening sentences are a greeting or a short lead-in
+    ("Hey Terrence, how are you?", "Okay, let's start with this.") that
+    reads better above the points than as a point of its own."""
+    n = 0
+    for sentence in sentences[:2]:
+        words = _words(sentence)
+        if (_GREETING.match(sentence) and words <= 12) or (
+                words <= 8 and not sentence.endswith("?")):
+            n += 1
+        else:
+            break
+    return n
+
+
+def _points(sentences: list[str]) -> list[str] | None:
+    """Group sentences into bullet points, or None when the text does not
+    break into at least two points."""
+    head = _intro(sentences)
+    intro, rest = sentences[:head], sentences[head:]
+    groups: list[list[str]] = [[]]
+    for sentence in rest:
+        current = groups[-1]
+        size = sum(_words(s) for s in current)
+        follows = (_POINTS_BACK.match(sentence)
+                   or _words(sentence) <= _SHORT_FOLLOW_UP_WORDS)
+        # "You know?", "So that I can…", "Because…" can't start a point
+        if current and (_words(sentence) <= _SHORT_FOLLOW_UP_WORDS
+                        or _DEPENDENT.match(sentence)):
+            current.append(sentence)
+            continue
+        if follows:
+            limit = POINT_MAX_WORDS * 1.5
+        elif _CONTINUATION.match(sentence):
+            limit = POINT_MAX_WORDS * 1.25
+        else:
+            limit = POINT_MAX_WORDS
+        # a question usually closes one ask; the next sentence starts another
+        # (questions asked back to back are one ask)
+        after_question = (current and current[-1].endswith("?")
+                          and not sentence.endswith("?")
+                          and not follows and not _CONTINUATION.match(sentence))
+        new_topic = bool(_TOPIC_SHIFT.match(sentence)) or after_question
+        if current and ((new_topic and size >= POINT_MIN_WORDS) or size >= limit):
+            groups.append([])
+        groups[-1].append(sentence)
+    groups = [g for g in groups if g]
+    # a tiny last point reads as an afterthought: keep it with the one before
+    if len(groups) > 1 and sum(_words(s) for s in groups[-1]) < 6:
+        groups[-2].extend(groups.pop())
+    if len(groups) < 2:
+        return None
+    bullets = "\n".join(BULLET + " ".join(g) for g in groups)
+    return [" ".join(intro) + "\n" + bullets] if intro else [bullets]
+
+
+def _prose(sentences: list[str], style: str, chat: bool) -> list[str]:
+    if style == "points" and sum(_words(s) for s in sentences) >= POINTS_MIN_WORDS:
+        points = _points(sentences)
+        if points is not None:
+            return points
+    if chat:  # a chat message stays one message, not paragraphs
+        return [" ".join(sentences)] if sentences else []
+    return _paragraphs(sentences)
+
+
+def format_layout(text: str, style: str = "points", chat: bool = False) -> str:
+    """Add bullet points (style "points") or paragraph breaks (style
+    "paragraphs"), and numbered lists. Wording is unchanged.
+
+    `chat` is for messaging apps: long dictations still get points, but
+    shorter ones stay a single message instead of paragraphs."""
     if not text.strip():
         return text
     blocks: list[str] = []
@@ -168,10 +249,10 @@ def format_layout(text: str) -> str:
         while sentences:
             found = _find_list(sentences)
             if found is None:
-                blocks.extend(_paragraphs(sentences))
+                blocks.extend(_prose(sentences, style, chat))
                 break
             start, items, end = found
-            blocks.extend(_paragraphs(sentences[:start]))
+            blocks.extend(_prose(sentences[:start], style, chat))
             blocks.append("\n".join(f"{n}. {' '.join(item)}"
                                     for n, item in enumerate(items, 1)))
             sentences = sentences[end:]

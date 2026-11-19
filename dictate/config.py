@@ -12,7 +12,7 @@ LOCAL_CONFIG_PATH = PROJECT_ROOT / "config.local.toml"
 DEFAULTS = {
     "general": {"hotkey": "right_option", "debug": True,
                 "mute_while_dictating": True, "raw_mode": False,
-                "smart_formatting": True},
+                "smart_formatting": True, "layout_style": "points"},
     "app_modes": {},
     "whisper": {"model": "mlx-community/whisper-large-v3-turbo",
                 "language": "en"},

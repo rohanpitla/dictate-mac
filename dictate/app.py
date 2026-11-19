@@ -570,10 +570,14 @@ class DictateApp(rumps.App):
                                                         style_hint)
                 if mode != "default":
                     stage = f"{stage}+{mode}"
-                # chat apps (Slack, Messages) get one plain message
-                if (mode != "casual"
-                        and self._config["general"].get("smart_formatting", True)):
-                    text = layout.format_layout(text)
+                if self._config["general"].get("smart_formatting", True):
+                    style = self._config["general"].get("layout_style", "points")
+                    if mode == "email":
+                        style = "paragraphs"  # bullets read oddly in a letter
+                    # chat apps (Slack, Messages): points for a long message,
+                    # otherwise one plain message
+                    text = layout.format_layout(text, style,
+                                                chat=(mode == "casual"))
             if recovered:
                 stage += "+recovered"
             cleanup_ms = (time.monotonic() - t2) * 1000
