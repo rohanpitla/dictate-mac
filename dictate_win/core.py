@@ -358,7 +358,8 @@ class Core:
                     style = general.get("layout_style", "points")
                     if mode == "email":
                         style = "paragraphs"
-                    text = layout.format_layout(text, style, chat=(mode == "casual"))
+                    text = layout.format_layout(text, style, chat=(mode == "casual"),
+                                                email=(mode == "email"))
             stage = f"{engine}/{stage}" + ("+recovered" if recovered else "")
             cleanup_ms = (time.monotonic() - t2) * 1000
 

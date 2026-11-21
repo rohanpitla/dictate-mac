@@ -705,6 +705,19 @@ def test_small():
     check("settings.toml can override an app's style",
           appdetect.resolve_mode("notion.exe", "", {"Notion.exe": "casual"}) == "casual")
 
+    from dictate import layout
+    mail = layout.format_layout(
+        "Hi Sam, thanks for the update on the launch. I looked over the plan and it "
+        "looks good to me. Could you send the final numbers by Friday? Thank you, Rohan",
+        "paragraphs", email=True)
+    check("an email gets its greeting and sign-off on their own lines",
+          mail.startswith("Hi Sam,\n") and mail.endswith("Thank you,\nRohan"), repr(mail))
+    todo = layout.format_layout(
+        "The list of tasks that I have are hitting the gym, and then studying for "
+        "a midterm, and also working on three assignments.", "points")
+    check("a spoken list becomes bullet points",
+          todo.count("\n• ") == 3 and "Studying for a midterm" in todo, repr(todo))
+
 
 # ------------------------------------------------------------ Windows only --
 @section("10. Windows: Credential Manager")
