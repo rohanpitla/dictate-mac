@@ -137,9 +137,91 @@ def _find_list(sentences: list[str]) -> tuple[int, list[list[str]], int] | None:
     return None
 
 
-def _paragraphs(sentences: list[str]) -> list[str]:
+# ------------------------------------------------------- spoken lists --
+# "The list of tasks I have are hitting the gym, and then working on three
+# assignments, and also studying for a midterm." -> an intro line and one
+# bullet per item. The words that only joined the items ("and then",
+# "also") are dropped, like the "first… second…" markers above.
+_LIST_NOUNS = (r"(?:list|things|tasks|items|to-?dos|priorities|steps|goals|errands|"
+               r"questions|points|requirements|options|ideas|topics|features|"
+               r"changes|chores)")
+_LIST_INTRO = re.compile(
+    rf"^(?P<intro>.*?\b(?:"
+    rf"{_LIST_NOUNS}\b[^.?!:]{{0,45}}?\b(?:are|is|include|includes|would be|will be)"
+    rf"(?:\s+(?:going to be|gonna be|like))?"
+    rf"|(?:i|we) (?:need|have|want|got|gotta) to (?:do|get done|finish|handle|cover|buy|get)"
+    rf"(?: (?:today|tonight|tomorrow|this week|this weekend))?(?: (?:is|are))?"
+    rf"|here(?:'s| is| are) (?:my|the|what|a)\b[^.?!:]{{0,35}}?"
+    rf"|the following(?: \w+)?(?: (?:is|are))?"
+    rf"))\s*[:,]?\s+(?P<items>\S.*)$",
+    re.IGNORECASE)
+_COLON_INTRO = re.compile(r"^(?P<intro>[^:]{3,120}):\s+(?P<items>\S.*)$")
+# Joining words between items, and a following sentence that adds an item.
+_ITEM_SPLIT = re.compile(
+    r"\s*(?:,|;)\s*(?:and\s+)?(?:then\s+)?(?:also\s+)?(?:after that\s+)?"
+    r"|\s+and then\s+(?:also\s+)?|\s+and also\s+", re.IGNORECASE)
+_ITEM_LEAD = re.compile(r"^(?:(?:and|then|also|plus|lastly|finally|after that)\b,?\s*)+",
+                        re.IGNORECASE)
+_KEEP_DOT = ("a.m.", "p.m.", "etc.", "e.g.", "i.e.", "vs.", "inc.", "jr.", "sr.")
+_ADDS_ITEM = re.compile(r"^(?:and\s+)?(?:also|then|plus|lastly|finally|and then)\b", re.IGNORECASE)
+# A piece starting like this belongs to the item before it ("the report,
+# which is due Friday").
+_ITEM_TAIL = re.compile(r"^(?:which|who|that|because|so|but|or|since|while|where|when|"
+                        r"either|it's|it is|that's|actually|no|sorry|i mean|"
+                        r"and\s+(?:i|we|it|that|this)\b)\b", re.IGNORECASE)
+MAX_ITEM_WORDS = 22
+
+
+def _items(text: str) -> list[str]:
+    pieces = [p.strip() for p in _ITEM_SPLIT.split(text) if p and p.strip()]
+    items: list[str] = []
+    for piece in pieces:
+        if items and _ITEM_TAIL.match(piece):
+            items[-1] = f"{items[-1]}, {piece}"
+            continue
+        piece = _ITEM_LEAD.sub("", piece).strip().rstrip("!")
+        if piece.endswith(".") and not piece.lower().endswith(_KEEP_DOT):
+            piece = piece[:-1]
+        if piece:
+            items.append(piece[0].upper() + piece[1:])
+    return items
+
+
+def _find_spoken_list(sentences: list[str]) -> tuple[int, str, list[str], int] | None:
+    """(sentence index, intro text, items, index after the list) or None."""
+    for i, sentence in enumerate(sentences):
+        match = _LIST_INTRO.match(sentence) or _COLON_INTRO.match(sentence)
+        if not match:
+            continue
+        text = match.group("items")
+        end = i + 1
+        # "Also, I have a meeting at 4." adds one more item
+        while end < len(sentences) and _ADDS_ITEM.match(sentences[end]) \
+                and _words(sentences[end]) <= MAX_ITEM_WORDS:
+            text = f"{text.rstrip('!')}, {_ITEM_LEAD.sub('', sentences[end])}"
+            end += 1
+        intro_text = match.group("intro")
+        if intro_text.count('"') % 2 or intro_text.count("“") > intro_text.count("”"):
+            continue  # inside a quotation: someone else's words, not a list
+        items = _items(text)
+        named = bool(re.search(rf"\b{_LIST_NOUNS}\b", intro_text, re.IGNORECASE))
+        short = all(_words(item) <= 6 for item in items)
+        if match.re is _COLON_INTRO and not named and not (len(items) >= 3 and short):
+            continue  # "it should be like: …" is prose, not a list
+        one_word = any(_words(item) == 1 for item in items)
+        if one_word and not all(_words(item) <= 3 for item in items):
+            continue  # "Honestly" is a filler that got split off, not an item
+        if (len(items) >= 3 or (len(items) == 2 and named and match.re is _COLON_INTRO)) \
+                and all(_words(item) <= MAX_ITEM_WORDS for item in items):
+            intro = match.group("intro").strip().rstrip(",")
+            return i, intro, items, end
+    return None
+
+
+def _paragraphs(sentences: list[str], short_text: int = SHORT_TEXT_WORDS,
+                max_words: int = MAX_PARAGRAPH_WORDS) -> list[str]:
     total = sum(_words(s) for s in sentences)
-    if total <= SHORT_TEXT_WORDS or len(sentences) < 3:
+    if total <= short_text or len(sentences) < 3:
         return [" ".join(sentences)] if sentences else []
     groups: list[list[str]] = [[]]
     for sentence in sentences:
@@ -149,11 +231,11 @@ def _paragraphs(sentences: list[str]) -> list[str]:
         # "And…"/"But…" may run a paragraph a little over; a sentence that
         # points back at the previous one may run it further
         if _POINTS_BACK.match(sentence) or _words(sentence) <= _SHORT_FOLLOW_UP_WORDS:
-            limit = MAX_PARAGRAPH_WORDS * 1.5
+            limit = max_words * 1.5
         elif _CONTINUATION.match(sentence):
-            limit = MAX_PARAGRAPH_WORDS * 1.25
+            limit = max_words * 1.25
         else:
-            limit = MAX_PARAGRAPH_WORDS
+            limit = max_words
         too_long = size >= limit
         if current and ((shift and size >= MIN_PARAGRAPH_WORDS) or too_long):
             groups.append([])
@@ -231,7 +313,78 @@ def _prose(sentences: list[str], style: str, chat: bool) -> list[str]:
     return _paragraphs(sentences)
 
 
-def format_layout(text: str, style: str = "points", chat: bool = False) -> str:
+# ---------------------------------------------------------------- email --
+# "Hi Derek, hope you're well. … Thank you, Rohan." becomes
+#
+#   Hi Derek,
+#
+#   Hope you're well. …
+#
+#   Thank you,
+#   Rohan
+_EMAIL_GREETING = re.compile(
+    r"^(?P<greeting>(?:hi|hey|hello|dear|greetings|good (?:morning|afternoon|evening))"
+    r"(?:\s+[^\s,.!?:;]+){0,3})\s*[,.!:]\s+(?P<rest>\S.*)$",
+    re.IGNORECASE | re.DOTALL)
+_SIGN_OFF_WORDS = (
+    r"(?:thanks|thank you)(?: (?:so|very) much)?(?: again)?|many thanks|"
+    r"best(?: regards| wishes)?|kind regards|warm regards|warmly|regards|cheers|"
+    r"sincerely|talk soon|all the best|take care|looking forward to it")
+# The last sentence: a sign-off, optionally followed by a capitalised name.
+_EMAIL_SIGN_OFF = re.compile(
+    rf"(?:^|(?<=[.!?])\s+)(?P<sign>(?i:{_SIGN_OFF_WORDS}))[,.!]?"
+    r"(?:\s+(?P<name>[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)?))?[.!]?\s*$")
+_EMAIL_PLEASANTRY = re.compile(
+    r"\bhope (?:you(?:'re| are)(?: doing)? (?:well|good|great)|all is well|"
+    r"this (?:email|message|note) finds you|you(?:'re| are) having a (?:good|great))",
+    re.IGNORECASE)
+# A closing line like "Let me know if…" reads best as its own paragraph.
+_EMAIL_CLOSER = re.compile(
+    r"^(?:(?:and|so|also)[,]?\s+)?(?:please\s+)?(?:let me know|looking forward|"
+    r"feel free|hope to hear|i look forward|talk soon|happy to)\b", re.IGNORECASE)
+
+
+def looks_like_email(text: str) -> bool:
+    """A greeting with a sign-off or an "I hope you're well": an email,
+    whichever app it is being written in."""
+    flat = " ".join(text.split())
+    if not _EMAIL_GREETING.match(flat):
+        return False
+    return bool(_EMAIL_SIGN_OFF.search(flat) or _EMAIL_PLEASANTRY.search(flat))
+
+
+def format_email(text: str) -> str | None:
+    """Greeting, body paragraphs and sign-off each on their own lines.
+    None when the text has neither a greeting nor a sign-off."""
+    flat = " ".join(text.split())
+    greeting = None
+    rest = flat
+    match = _EMAIL_GREETING.match(flat)
+    if match:
+        greeting = match.group("greeting").strip() + ","
+        rest = match.group("rest")
+        rest = rest[0].upper() + rest[1:]
+    closing = None
+    sign = _EMAIL_SIGN_OFF.search(rest)
+    if sign and sign.start() > 0:
+        word = sign.group("sign")
+        word = word[0].upper() + word[1:]
+        name = sign.group("name")
+        closing = f"{word},\n{name}" if name else rest[sign.start():].strip()
+        rest = rest[:sign.start()].strip()
+    if greeting is None and closing is None:
+        return None
+    sentences = split_sentences(rest)
+    closer = []
+    if len(sentences) >= 2 and _EMAIL_CLOSER.match(sentences[-1]):
+        closer = [sentences.pop()]
+    body = _paragraphs(sentences, short_text=30, max_words=35) if sentences else []
+    blocks = [greeting, *body, " ".join(closer), closing]
+    return "\n\n".join(b for b in blocks if b)
+
+
+def format_layout(text: str, style: str = "points", chat: bool = False,
+                  email: bool = False) -> str:
     """Add bullet points (style "points") or paragraph breaks (style
     "paragraphs"), and numbered lists. Wording is unchanged.
 
@@ -239,6 +392,13 @@ def format_layout(text: str, style: str = "points", chat: bool = False) -> str:
     shorter ones stay a single message instead of paragraphs."""
     if not text.strip():
         return text
+    # Emails: in an email app, or anything shaped like one (greeting +
+    # sign-off), except chat messages, which stay one message.
+    if (email or looks_like_email(text)) and not chat \
+            and not re.search(r"(?m)^\s*(?:\d+[.)]|[-*•])\s", text):
+        laid_out = format_email(text)
+        if laid_out is not None:
+            return laid_out
     blocks: list[str] = []
     # respect any line breaks already present (e.g. from the cleanup model)
     for existing in re.split(r"\n\s*\n", text.strip()):
@@ -248,6 +408,15 @@ def format_layout(text: str, style: str = "points", chat: bool = False) -> str:
         sentences = split_sentences(" ".join(existing.split()))
         while sentences:
             found = _find_list(sentences)
+            spoken = _find_spoken_list(sentences)
+            if spoken is not None and (found is None or spoken[0] < found[0]):
+                start, intro, items, end = spoken
+                lead = sentences[:start]
+                head = " ".join(lead + [intro + ":"]) if intro else " ".join(lead)
+                bullets = "\n".join(BULLET + item for item in items)
+                blocks.append(f"{head}\n{bullets}" if head else bullets)
+                sentences = sentences[end:]
+                continue
             if found is None:
                 blocks.extend(_prose(sentences, style, chat))
                 break

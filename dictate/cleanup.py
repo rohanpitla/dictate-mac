@@ -163,6 +163,55 @@ def content_retention(raw: str, cleaned: str) -> float:
     return len(spoken & _content_words(cleaned)) / len(spoken)
 
 
+# Numbers the model must not move or invent. "one" is left out: it is more
+# often a word ("one of them") than a number.
+_NUMBER_WORDS = {w: str(i) for i, w in enumerate(
+    "zero _ two three four five six seven eight nine ten eleven twelve "
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())
+    if w != "_"}
+_NUMBER_WORDS.update({"thirty": "30", "forty": "40", "fifty": "50", "sixty": "60",
+                      "seventy": "70", "eighty": "80", "ninety": "90"})
+
+
+def _numbers(text: str) -> list[str]:
+    text = text.lower()
+    text = re.sub(r"(?m)^\s*\d+[.)]\s", " ", text)          # list numbering
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)          # 10,000
+    text = re.sub(r"\b(\d+)k\b", r"\g<1>000", text)          # 10k
+    text = re.sub(r"(?<=\d):00\b", "", text)                 # 4:00 = 4
+    found = []
+    for token in re.findall(r"\d+|[a-z]+", text):
+        if token.isdigit():
+            found.append(str(int(token)))
+        elif token in _NUMBER_WORDS:
+            found.append(_NUMBER_WORDS[token])
+    return [n for n in found if n != "1"]  # "1"/"one" too: see above
+
+
+def numbers_in_order(raw: str, cleaned: str) -> bool:
+    """Every number in the cleanup was spoken, in the order spoken.
+    Dropping one is fine ("at 2, actually 4" -> "at 4"); swapping or
+    changing one is not ("33 questions" must never become "50")."""
+    spoken = iter(_numbers(raw))
+    return all(n in spoken for n in _numbers(cleaned))
+
+
+# "at 4 p.m. actually it's at 5" — the number after a correction word is
+# the one the speaker meant, so the cleanup must keep it.
+_CORRECTION = re.compile(
+    r"\b(?:actually|no wait|wait no|sorry|i mean|correction|scratch that|make that)"
+    r"\b[^.?!\d]{0,25}?(\d+|" + "|".join(_NUMBER_WORDS) + r")\b", re.IGNORECASE)
+
+
+def keeps_corrections(raw: str, cleaned: str) -> bool:
+    kept = set(_numbers(cleaned))
+    for match in _CORRECTION.finditer(raw):
+        number = _numbers(match.group(1))
+        if number and number[0] not in kept:
+            return False
+    return True
+
+
 def passes_guardrails(raw: str, cleaned: str) -> bool:
     """The cleanup pass must never lose, invent, or answer user content."""
     if not cleaned:
@@ -173,6 +222,8 @@ def passes_guardrails(raw: str, cleaned: str) -> bool:
     if cleaned.lower().startswith(_META_PREFIXES):
         return False
     if content_retention(raw, cleaned) < MIN_CONTENT_RETENTION:
+        return False
+    if not numbers_in_order(raw, cleaned) or not keeps_corrections(raw, cleaned):
         return False
     return word_overlap(raw, cleaned) >= MIN_WORD_OVERLAP
 
