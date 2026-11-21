@@ -577,7 +577,8 @@ class DictateApp(rumps.App):
                     # chat apps (Slack, Messages): points for a long message,
                     # otherwise one plain message
                     text = layout.format_layout(text, style,
-                                                chat=(mode == "casual"))
+                                                chat=(mode == "casual"),
+                                                email=(mode == "email"))
             if recovered:
                 stage += "+recovered"
             cleanup_ms = (time.monotonic() - t2) * 1000

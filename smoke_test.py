@@ -277,6 +277,56 @@ def main() -> int:
                   "I built. It takes a minute.")
     check("layout: a short chat message stays one message",
           layout.format_layout(chat_short, chat=True) == chat_short)
+    derek = ("Hi Derek, hope you're doing well. I was hoping we could meet at "
+             "3pm today. And let me know if you have any other comments. "
+             "Thank you, Rohan.")
+    check("layout: an email gets greeting, body and sign-off on their own lines",
+          layout.format_layout(derek, email=True) ==
+          "Hi Derek,\n\nHope you're doing well. I was hoping we could meet at "
+          "3pm today.\n\nAnd let me know if you have any other comments."
+          "\n\nThank you,\nRohan", layout.format_layout(derek, email=True))
+    check("layout: an email is recognised by its shape in any app",
+          layout.format_layout(derek).startswith("Hi Derek,\n\n"))
+    check("layout: a chat message with a greeting stays one message",
+          "\n" not in layout.format_layout(derek, chat=True))
+    check("layout: 'Hey, can you…' and 'Thank you so much for…' are not emails",
+          "\n" not in layout.format_layout(
+              "Hey can you summarize this article for me. Thanks.")
+          and "\n" not in layout.format_layout(
+              "Thank you so much for your help with the deck. It went well."))
+    tasks = layout.format_layout(
+        "I want you to help me plan my day. So the list of tasks that I have "
+        "are going to be hitting the gym either in the evening or morning, and "
+        "then working on three assignments for three different classes, and "
+        "then also studying for a midterm. Also, I have a meeting at 4 p.m.")
+    check("layout: a spoken list ('the list of tasks I have are X, and then Y…') "
+          "becomes bullet points",
+          tasks.endswith("are going to be:\n• Hitting the gym either in the "
+                         "evening or morning\n• Working on three assignments for "
+                         "three different classes\n• Studying for a midterm\n"
+                         "• I have a meeting at 4 p.m."), tasks)
+    check("layout: ordinary sentences with commas are not lists",
+          "\n" not in layout.format_layout(
+              "I went to the store, bought milk, and came home. His plan is to "
+              "host sessions for students, companies, and schools.")
+          and "\n" not in layout.format_layout(
+              'She said "these are the things I have to do, and then some, and '
+              'more" and laughed.'))
+    from dictate import cleanup as cleanup_mod
+    check("guardrail: the cleanup may not swap or change numbers",
+          not cleanup_mod.passes_guardrails(
+              "i have a meeting at 2 p.m. actually it's at 4 p.m. and then the gym",
+              "I have a meeting at 4 p.m. actually, it's at 2 p.m. and then the gym.")
+          and not cleanup_mod.passes_guardrails(
+              "but yeah there are like 33 questions in 90 minutes",
+              "There are 50 questions in 90 minutes."))
+    check("guardrail: the corrected number must survive the cleanup",
+          not cleanup_mod.passes_guardrails(
+              "the meeting is at 4 p.m. actually it's at 5 p.m. so plan around that",
+              "The meeting is at 4:00 p.m. so plan around that.")
+          and cleanup_mod.passes_guardrails(
+              "the meeting is at 4 p.m. actually it's at 5 p.m. so plan around that",
+              "The meeting is at 5 p.m., so plan around that."))
     check("layout: short text and stray ordinals left alone",
           layout.format_layout("Let's meet at 4 pm.") == "Let's meet at 4 pm."
           and "\n" not in layout.format_layout(
