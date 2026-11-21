@@ -17,6 +17,19 @@ permissions:
   contents: read   # least privilege: this workflow only reads the code
 
 jobs:
+  groq-models:
+    # Groq retires models with a few weeks' notice; fail loudly when ours go.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Groq still serves our models
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python3 windows/check_groq_models.py
+
   test:
     strategy:
       fail-fast: false
