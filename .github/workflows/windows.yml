@@ -59,7 +59,11 @@ jobs:
         run: |
           $base = Join-Path $env:LOCALAPPDATA "Dictate"
           Push-Location (Join-Path $base "app")
-          & (Join-Path $base "venv\Scripts\python.exe") -m dictate_win.selftest 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\selftest.txt"
+          # PowerShell 5 turns each stderr line into an error record, which
+          # "Stop" treats as fatal; the self-test's own exit code decides.
+          $ErrorActionPreference = "Continue"
+          & (Join-Path $base "venv\Scripts\python.exe") -m dictate_win.selftest 2>&1 |
+            ForEach-Object { "$_" } | Tee-Object -FilePath "$env:RUNNER_TEMP\selftest.txt"
           $code = $LASTEXITCODE
           Pop-Location
           exit $code
