@@ -1074,12 +1074,16 @@ def test_local_engine():
 def main() -> int:
     print(f"Dictate for Windows self-test on {sys.platform}, Python {sys.version.split()[0]}")
     try:
-        for test in (test_imports, test_settings, test_taps, test_resample, test_groq,
-                     test_cleanup, test_core, test_mic_process, test_small,
-                     test_credentials, test_clipboard, test_paste_into_app, test_hotkey,
-                     test_real_mic, test_mute, test_key_dialog, test_tray,
-                     test_local_engine):
-            test()
+        tests = (test_imports, test_settings, test_taps, test_resample, test_groq,
+                 test_cleanup, test_core, test_mic_process, test_small,
+                 test_credentials, test_clipboard, test_paste_into_app, test_hotkey,
+                 test_real_mic, test_mute, test_key_dialog, test_tray,
+                 test_local_engine)
+        # Optional: run only some tests, e.g.  -m dictate_win.selftest core mic_process
+        wanted = [a for a in sys.argv[1:] if not a.startswith("-")]
+        for test in tests:
+            if not wanted or test.__name__.removeprefix("test_") in wanted:
+                test()
     finally:
         shutil.rmtree(_TMP, ignore_errors=True)
     print(f"\n{results['PASS']} passed, {results['FAIL']} failed, "

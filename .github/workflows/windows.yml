@@ -30,11 +30,57 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python3 windows/check_groq_models.py
 
+  x64-parts:
+    # windows-latest froze the whole machine during the full self-test.
+    # Each group runs on its own machine; the one that never finishes is it.
+    strategy:
+      fail-fast: false
+      matrix:
+        part:
+          - "imports settings taps resample groq cleanup"
+          - "core"
+          - "mic_process small"
+          - "credentials clipboard"
+          - "paste_into_app"
+          - "hotkey"
+          - "real_mic"
+          - "mute"
+          - "key_dialog"
+          - "tray"
+          - "local_engine"
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install
+        run: |
+          if ("${{ matrix.part }}" -eq "local_engine") {
+            .\windows\install.ps1 -Source $PWD -WithLocal -NoLaunch -NoStartAtLogin
+          } else {
+            .\windows\install.ps1 -Source $PWD -NoLaunch -NoStartAtLogin
+          }
+      - name: Self-test part
+        run: |
+          $base = Join-Path $env:LOCALAPPDATA "Dictate"
+          Push-Location (Join-Path $base "app")
+          $ErrorActionPreference = "Continue"
+          & (Join-Path $base "venv\Scripts\python.exe") -u -m dictate_win.selftest ${{ matrix.part }} 2>&1 |
+            ForEach-Object { "$(Get-Date -Format HH:mm:ss) $_" }
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-11-arm]
+        # windows-latest is tested in parts below until its freeze is found
+        os: [windows-11-arm]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     defaults:
