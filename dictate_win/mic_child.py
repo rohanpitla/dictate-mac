@@ -137,8 +137,12 @@ def main() -> int:
     for arg in sys.argv[1:]:
         if arg.startswith("--only="):
             only = arg.split("=", 1)[1]
+    # The slow imports happen here, before "armed", so a tap never waits for
+    # them (numpy alone can take seconds on ARM laptops under emulation).
+    import numpy  # noqa: F401
     if not fake:
-        import sounddevice as sd  # the slow part: done before "armed"
+        import sounddevice as sd
+        import dictate_win.resample  # noqa: F401
     log("armed")
     try:
         if not sys.stdin.buffer.read(1):

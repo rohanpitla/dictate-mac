@@ -56,6 +56,7 @@ jobs:
         run: .\windows\install.ps1 -Source $PWD -WithLocal -NoLaunch -NoStartAtLogin
 
       - name: Self-test (installed copy)
+        timeout-minutes: 20
         run: |
           $base = Join-Path $env:LOCALAPPDATA "Dictate"
           Push-Location (Join-Path $base "app")

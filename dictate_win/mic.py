@@ -22,6 +22,9 @@ BLOCK_BYTES = 1600          # 50 ms of 16 kHz int16
 # Bluetooth headsets switch to their microphone profile when it opens,
 # which can take a couple of seconds.
 FIRST_AUDIO_TIMEOUT_S = 4.0
+# A child that was not armed in advance first has to start Python and load
+# its libraries (slow on ARM laptops under emulation, or with antivirus).
+ARM_TIMEOUT_S = 30.0
 
 _lock = threading.Lock()
 _armed: subprocess.Popen | None = None
@@ -90,6 +93,7 @@ class MicStream:
         self._callback = callback
         self._proc: subprocess.Popen | None = None
         self._first_audio = threading.Event()
+        self._ready = threading.Event()  # the child printed "armed"
         self.stderr: list[str] = []
         self.via = ""
 
@@ -106,9 +110,14 @@ class MicStream:
             self.abort()
             raise RuntimeError(f"the microphone process is not running ({exc})") from exc
         threading.Thread(target=arm, daemon=True, name="dictate-mic-arm").start()
-        deadline = time.monotonic() + FIRST_AUDIO_TIMEOUT_S
+        armed_by = time.monotonic() + ARM_TIMEOUT_S
+        deadline = None  # the audio clock starts once the child is ready
         while not self._first_audio.wait(0.05):
-            if proc.poll() is not None or time.monotonic() > deadline:
+            now = time.monotonic()
+            if deadline is None and self._ready.is_set():
+                deadline = now + FIRST_AUDIO_TIMEOUT_S
+            late = now > (deadline if deadline is not None else armed_by)
+            if proc.poll() is not None or late:
                 time.sleep(0.1)  # let the last error line arrive
                 detail = " ".join(self.stderr[-2:]) or "no audio arrived"
                 self.abort()
@@ -132,6 +141,8 @@ class MicStream:
         for raw in proc.stderr:
             line = raw.decode("utf-8", "replace").strip()
             self.stderr = (self.stderr + [line])[-5:]
+            if line == "[mic] armed":
+                self._ready.set()
             if line.startswith("[mic] capturing via "):
                 self.via = line.rsplit(" ", 1)[-1]
 

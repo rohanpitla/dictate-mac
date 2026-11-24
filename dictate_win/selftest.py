@@ -13,6 +13,7 @@ API keys. It never touches the real settings, history, or saved key.
 """
 
 import contextlib
+import faulthandler
 import io
 import json
 import os
@@ -50,15 +51,23 @@ def skip(name: str, why: str) -> None:
     report("SKIP", name, why)
 
 
+SECTION_TIMEOUT_S = 240
+
+
 def section(title: str):
     def wrap(fn):
         def run():
             print(f"\n== {title} ==", flush=True)
+            # A hung section prints every thread's stack and ends the run,
+            # so CI shows where it stuck instead of timing out silently.
+            faulthandler.dump_traceback_later(SECTION_TIMEOUT_S, exit=True)
             try:
                 fn()
             except Exception as exc:
                 report("FAIL", f"{title}: crashed", repr(exc))
                 traceback.print_exc()
+            finally:
+                faulthandler.cancel_dump_traceback_later()
         run.__name__ = fn.__name__
         return run
     return wrap
