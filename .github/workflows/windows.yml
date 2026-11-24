@@ -59,15 +59,29 @@ jobs:
         timeout-minutes: 20
         run: |
           $base = Join-Path $env:LOCALAPPDATA "Dictate"
-          Push-Location (Join-Path $base "app")
-          # PowerShell 5 turns each stderr line into an error record, which
-          # "Stop" treats as fatal; the self-test's own exit code decides.
-          $ErrorActionPreference = "Continue"
-          & (Join-Path $base "venv\Scripts\python.exe") -m dictate_win.selftest 2>&1 |
-            ForEach-Object { "$_" } | Tee-Object -FilePath "$env:RUNNER_TEMP\selftest.txt"
-          $code = $LASTEXITCODE
-          Pop-Location
-          exit $code
+          $out = Join-Path $env:RUNNER_TEMP "selftest.txt"
+          $err = Join-Path $env:RUNNER_TEMP "selftest-err.txt"
+          # Run in the background with a hard limit, so a hang still leaves
+          # a log (a job killed at its time limit keeps no log at all).
+          $p = Start-Process -FilePath (Join-Path $base "venv\Scripts\python.exe") `
+                 -ArgumentList "-u -m dictate_win.selftest" `
+                 -WorkingDirectory (Join-Path $base "app") -NoNewWindow -PassThru `
+                 -RedirectStandardOutput $out -RedirectStandardError $err
+          $null = $p.Handle  # without this, ExitCode can come back empty
+          $finished = $p.WaitForExit(12 * 60 * 1000)
+          if (-not $finished) {
+            "=== SELF-TEST HUNG: still running after 12 minutes ==="
+            Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*dictate*" } |
+              ForEach-Object { "still running: pid $($_.ProcessId) $($_.CommandLine)" }
+            & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+          }
+          Get-Content $out
+          "--- stderr ---"
+          Get-Content $err
+          $errText = Get-Content $err -Raw
+          if ($errText) { Add-Content $out $errText }
+          if (-not $finished) { exit 1 }
+          exit $p.ExitCode
 
       - name: Start the real app
         run: |
