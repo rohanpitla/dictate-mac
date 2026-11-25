@@ -889,9 +889,12 @@ def test_hotkey():
         got = wait_for(lambda: len(taps) == 1, 3)
         check("a Right Ctrl tap is heard from any app", got, f"{len(taps)} taps")
         taps.clear()
-        send((0xA3, False, True), (0x43, False, False), (0x43, True, False), (0xA3, True, True))
+        # Right Ctrl + F13, not + C: synthetic keys go to whatever window is
+        # in front, and a real Ctrl+C there (a CI console) interrupts it.
+        # F13 does nothing anywhere; the rule tested is the same.
+        send((0xA3, False, True), (0x7C, False, False), (0x7C, True, False), (0xA3, True, True))
         time.sleep(0.5)
-        check("Right Ctrl + C does not trigger dictation", taps == [])
+        check("Right Ctrl + another key does not trigger dictation", taps == [])
         send((0xA2, False, False), (0xA2, True, False))  # Left Ctrl
         time.sleep(0.5)
         check("Left Ctrl does not trigger dictation", taps == [])
